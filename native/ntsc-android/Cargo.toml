@@ -1,0 +1,16 @@
+[package]
+name = "ntsc_android"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+ntsc-rs = { git = "https://github.com/valadaptive/ntsc-rs.git", tag = "v0.9.4", features = ["rayon"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

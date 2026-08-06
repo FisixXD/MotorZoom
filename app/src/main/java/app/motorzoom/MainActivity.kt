@@ -1,9 +1,7 @@
 package app.motorzoom
 
 import android.Manifest
-import android.content.ActivityNotFoundException
 import android.content.ContentValues
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -15,7 +13,6 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.AspectRatio
@@ -41,6 +38,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -58,6 +56,29 @@ class MainActivity : AppCompatActivity() {
     private var zoomUnitsPerSecond = 0.35f
     private var lastZoomFrameNanos = 0L
     private var lastCameraUpdateNanos = 0L
+    private var zoomRequestInFlight = false
+    private var queuedZoom = 1f
+    private var presetJson = ""
+    private var presetName = "Padrão"
+
+    private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) startNtscProcessing(uri)
+    }
+
+    private val presetPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                presetJson = contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
+                check(presetJson.contains("\"version\""))
+                presetName = uri.lastPathSegment?.substringAfterLast('/') ?: "Preset importado"
+                Toast.makeText(this, "Preset carregado: $presetName", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                presetJson = ""
+                presetName = "Padrão"
+                Toast.makeText(this, "Esse arquivo não parece ser um preset NTSC-RS", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     private val zoomFrame = object : android.view.Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -74,9 +95,10 @@ class MainActivity : AppCompatActivity() {
                 .coerceIn(minZoom, maxZoom)
             binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
 
-            // Limit CameraX requests to about 30 Hz so slower devices do not queue work.
-            if (frameTimeNanos - lastCameraUpdateNanos >= 33_000_000L) {
-                camera?.cameraControl?.setZoomRatio(currentZoom)
+            // Coalesce requests at 20 Hz. CameraX cancels overlapping zoom futures,
+            // which produces visible stalls on slower camera HALs such as the A06.
+            if (frameTimeNanos - lastCameraUpdateNanos >= 50_000_000L) {
+                submitZoom(currentZoom)
                 lastCameraUpdateNanos = frameTimeNanos
             }
 
@@ -122,7 +144,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.recordButton.setOnClickListener { toggleRecording() }
         binding.photoButton.setOnClickListener { takePhoto() }
-        binding.ntscButton.setOnClickListener { openNtscRs() }
+        binding.ntscButton.setOnClickListener { showProcessorMenu() }
     }
 
     private fun installRocker(view: View, direction: Int) {
@@ -156,6 +178,20 @@ class MainActivity : AppCompatActivity() {
         zoomDirection = 0
         lastZoomFrameNanos = 0L
         android.view.Choreographer.getInstance().removeFrameCallback(zoomFrame)
+        submitZoom(currentZoom)
+    }
+
+    private fun submitZoom(value: Float) {
+        queuedZoom = value
+        val activeCamera = camera ?: return
+        if (zoomRequestInFlight) return
+
+        val submitted = queuedZoom
+        zoomRequestInFlight = true
+        activeCamera.cameraControl.setZoomRatio(submitted).addListener({
+            zoomRequestInFlight = false
+            if (abs(queuedZoom - submitted) >= 0.005f) submitZoom(queuedZoom)
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun startCamera() {
@@ -293,27 +329,37 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun openNtscRs() {
-        val editorUri = try {
-            Uri.parse(OfflineNtscServer.url(this))
-        } catch (_: java.io.FileNotFoundException) {
-            Toast.makeText(this, getString(R.string.offline_editor_missing), Toast.LENGTH_LONG).show()
-            return
-        } catch (_: Exception) {
-            Toast.makeText(this, getString(R.string.offline_editor_error), Toast.LENGTH_LONG).show()
-            return
-        }
-        try {
-            CustomTabsIntent.Builder()
-                .setShowTitle(true)
-                .setUrlBarHidingEnabled(true)
-                .build()
-                .launchUrl(this, editorUri)
-        } catch (_: ActivityNotFoundException) {
+    private fun showProcessorMenu() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("NTSC-RS offline")
+            .setMessage("Preset atual: $presetName\nA saída é criada em 640×480; o original não é alterado.")
+            .setPositiveButton("Escolher vídeo") { _, _ -> videoPicker.launch(arrayOf("video/*")) }
+            .setNeutralButton("Importar preset") { _, _ ->
+                presetPicker.launch(arrayOf("application/json", "text/plain"))
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun startNtscProcessing(uri: Uri) {
+        binding.ntscButton.isEnabled = false
+        binding.ntscButton.text = "0%"
+        cameraExecutor.execute {
             try {
-                startActivity(Intent(Intent.ACTION_VIEW, editorUri))
-            } catch (_: ActivityNotFoundException) {
-                Toast.makeText(this, getString(R.string.browser_required), Toast.LENGTH_LONG).show()
+                NtscVideoProcessor(contentResolver).process(uri, presetJson) { percent ->
+                    runOnUiThread { binding.ntscButton.text = "$percent%" }
+                }
+                runOnUiThread {
+                    binding.ntscButton.isEnabled = true
+                    binding.ntscButton.text = getString(R.string.ntsc_rs)
+                    Toast.makeText(this, "Vídeo NTSC salvo em Movies/MotorZoom", Toast.LENGTH_LONG).show()
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    binding.ntscButton.isEnabled = true
+                    binding.ntscButton.text = getString(R.string.ntsc_rs)
+                    Toast.makeText(this, "Falha ao processar: ${error.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

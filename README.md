@@ -47,8 +47,27 @@ O workflow baixa uma cópia fixa da versão web oficial e suas licenças antes d
 
 O editor funciona sem internet desde a primeira execução do APK. Como a cópia fica congelada na versão baixada durante a compilação, uma atualização futura do editor exige gerar um novo APK.
 
+Enquanto o editor está aberto, uma notificação discreta mantém o servidor local ativo. Ela desaparece quando o usuário retorna ao Motor Zoom. O controle de zoom agrupa comandos pendentes e envia apenas o valor mais recente ao CameraX, reduzindo cancelamentos e engasgos no Galaxy A06.
+
 ## Observações do Galaxy A06
 
 O aparelho não possui teleobjetiva. Portanto, o zoom acima de 1× é um recorte digital do sensor principal. Para preservar mais detalhe antes do processamento no `ntsc-rs`, grave com boa iluminação e mantenha o zoom moderado, preferencialmente até 2×.
 
 Este protótipo prioriza 1080p e recua para 720p se a combinação de vídeo, foto e prévia não for aceita pelo aparelho.
+# Motor Zoom
+
+Aplicativo Android para câmera 4:3 com rocker de zoom contínuo e processamento
+NTSC-RS pós-gravação totalmente offline.
+
+## NTSC-RS nativo
+
+- Escolha **PROCESSAR** e importe presets `.json` criados no NTSC-RS do PC.
+- O núcleo oficial `ntsc-rs` roda dentro do APK por JNI; não usa navegador,
+  servidor local ou internet.
+- O resultado é gerado em 640×480 em `Movies/MotorZoom`, sem alterar o original.
+- A faixa de áudio original é copiada sem recompressão para preservar a qualidade.
+
+## Compilar
+
+Envie o projeto ao GitHub e execute **Actions → Compilar APK → Run workflow**.
+O workflow compila o núcleo Rust ARM64 e disponibiliza `MotorZoom-debug-apk`.
