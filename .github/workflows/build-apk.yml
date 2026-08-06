@@ -26,7 +26,21 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Compilar APK
+      - name: Empacotar editor NTSC-RS oficial para uso offline
+        run: |
+          python3 scripts/fetch_ntsc_web.py
+          mkdir -p app/src/main/assets/ntsc-web/licenses
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/ntsc-rs/ntsc-rs/main/LICENSE-APACHE-2.0 \
+            --output app/src/main/assets/ntsc-web/licenses/LICENSE-APACHE-2.0
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/ntsc-rs/ntsc-rs/main/LICENSE-ISC \
+            --output app/src/main/assets/ntsc-web/licenses/LICENSE-ISC
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/ntsc-rs/ntsc-rs/main/LICENSE-MIT \
+            --output app/src/main/assets/ntsc-web/licenses/LICENSE-MIT
+
+      - name: Compilar APK de teste
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Disponibilizar APK
