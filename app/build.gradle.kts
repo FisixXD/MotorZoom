@@ -11,8 +11,8 @@ android {
         applicationId = "app.motorzoom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.4.0"
     }
 
     buildFeatures {
@@ -34,6 +34,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.browser:browser:1.8.0")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

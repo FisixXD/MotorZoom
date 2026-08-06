@@ -11,4 +11,6 @@
     <string name="camera_permission_required">A câmera é necessária para gravar.</string>
     <string name="photo_saved">Foto 4:3 salva em Pictures/MotorZoom</string>
     <string name="browser_required">Instale ou atualize o Chrome para usar o NTSC-RS.</string>
+    <string name="offline_editor_missing">O editor offline não foi incluído neste APK. Compile novamente pelo workflow atualizado.</string>
+    <string name="offline_editor_error">Não foi possível iniciar o editor NTSC-RS offline.</string>
 </resources>

@@ -294,7 +294,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openNtscRs() {
-        val editorUri = Uri.parse("https://web.ntsc.rs/")
+        val editorUri = try {
+            Uri.parse(OfflineNtscServer.url(this))
+        } catch (_: java.io.FileNotFoundException) {
+            Toast.makeText(this, getString(R.string.offline_editor_missing), Toast.LENGTH_LONG).show()
+            return
+        } catch (_: Exception) {
+            Toast.makeText(this, getString(R.string.offline_editor_error), Toast.LENGTH_LONG).show()
+            return
+        }
         try {
             CustomTabsIntent.Builder()
                 .setShowTitle(true)
