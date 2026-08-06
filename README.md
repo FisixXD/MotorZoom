@@ -41,9 +41,11 @@ O workflow também começa automaticamente quando o projeto é enviado para a br
 
 ## Editor NTSC-RS
 
-O botão **NTSC-RS** abre `https://web.ntsc.rs/` em uma Chrome Custom Tab. Essa abordagem mantém os recursos de WebAssembly e WebCodecs necessários para importar mídia, ajustar o efeito, trabalhar com presets e exportar o resultado. O editor processa os arquivos no próprio aparelho.
+O botão **NTSC-RS** abre a build web oficial empacotada no APK em uma Chrome Custom Tab, servida apenas no endereço local `127.0.0.1`. Essa abordagem mantém WebAssembly e WebCodecs para importar mídia, ajustar o efeito, trabalhar com presets e exportar o resultado, sem conexão externa durante o uso.
 
-Na primeira utilização, abra o editor conectado à internet. Depois que ele estiver carregado, use a opção do Chrome para adicionar/instalar o web app se quiser acesso offline mais confiável. Por segurança do Android, o navegador exige que o usuário selecione manualmente o vídeo ou a foto que será processado.
+O workflow baixa uma cópia fixa da versão web oficial e suas licenças antes de compilar. Se o módulo WebAssembly não for encontrado, a compilação falha em vez de produzir um APK offline incompleto. Por segurança do Android, o navegador exige que o usuário selecione manualmente o vídeo ou a foto que será processado.
+
+O editor funciona sem internet desde a primeira execução do APK. Como a cópia fica congelada na versão baixada durante a compilação, uma atualização futura do editor exige gerar um novo APK.
 
 ## Observações do Galaxy A06
 
