@@ -4,14 +4,13 @@ use jni::{
     JNIEnv,
 };
 use ntsc_rs::{
-    settings::{SettingsList, standard::NtscEffect},
+    settings::SettingsList,
     yiq_fielding::Rgbx,
-    Context,
+    NtscEffect, NtscEffectFullSettings,
 };
 use std::sync::{Mutex, OnceLock};
 
 struct Engine {
-    context: Context,
     effect: NtscEffect,
 }
 
@@ -20,7 +19,6 @@ static ENGINE: OnceLock<Mutex<Engine>> = OnceLock::new();
 fn engine() -> &'static Mutex<Engine> {
     ENGINE.get_or_init(|| {
         Mutex::new(Engine {
-            context: Context::new(),
             effect: NtscEffect::default(),
         })
     })
@@ -32,14 +30,15 @@ pub extern "system" fn Java_app_motorzoom_NativeNtsc_configure(
     _class: JClass,
     preset: JString,
 ) -> jboolean {
-    let Ok(text) = env.get_string(&preset).map(|s| s.into()) else {
-        return JNI_FALSE;
+    let text: String = match env.get_string(&preset) {
+        Ok(value) => value.into(),
+        Err(_) => return JNI_FALSE,
     };
     let effect = if text.trim().is_empty() {
         NtscEffect::default()
     } else {
-        match SettingsList::<NtscEffect>::new().from_json(&text) {
-            Ok(value) => value,
+        match SettingsList::<NtscEffectFullSettings>::new().from_json(&text) {
+            Ok(value) => (&value).into(),
             Err(_) => return JNI_FALSE,
         }
     };
@@ -69,7 +68,6 @@ pub extern "system" fn Java_app_motorzoom_NativeNtsc_processRgba(
     {
         let locked = engine().lock().unwrap();
         locked.effect.apply_effect_to_buffer::<Rgbx, u8>(
-            &locked.context,
             (width as usize, height as usize),
             &mut bytes,
             frame_number.max(0) as usize,
