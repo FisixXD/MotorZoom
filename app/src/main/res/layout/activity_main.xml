@@ -74,7 +74,7 @@
             android:value="0.35"
             android:valueFrom="0.10"
             android:valueTo="1.50"
-            app:stepSize="0.05"
+            android:stepSize="0.05"
             app:thumbColor="@color/white"
             app:trackColorActive="@color/red_record" />
     </LinearLayout>
