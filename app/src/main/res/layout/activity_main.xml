@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:implementationMode="performance"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="4:3"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:scaleType="fillCenter" />
+
+    <TextView
+        android:id="@+id/zoomLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="@color/panel"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:text="1.00×"
+        android:textColor="@color/white"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/ntscButton"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:layout_marginTop="12dp"
+        android:text="@string/ntsc_rs"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/panel"
+        app:cornerRadius="12dp"
+        app:layout_constraintEnd_toStartOf="@id/rockerPanel"
+        app:layout_constraintStart_toEndOf="@id/zoomLabel"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/speedPanel"
+        android:layout_width="280dp"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="@color/panel"
+        android:orientation="vertical"
+        android:padding="12dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/speedLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Velocidade: 0.35×/s"
+            android:textColor="@color/white"
+            android:textSize="14sp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/speedSlider"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:value="0.35"
+            android:valueFrom="0.10"
+            android:valueTo="1.50"
+            app:stepSize="0.05"
+            app:thumbColor="@color/white"
+            app:trackColorActive="@color/red_record" />
+    </LinearLayout>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/recordButton"
+        android:layout_width="92dp"
+        android:layout_height="64dp"
+        android:layout_marginBottom="20dp"
+        android:text="@string/record"
+        android:textColor="@color/white"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/red_record"
+        app:cornerRadius="32dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/rockerPanel"
+        app:layout_constraintStart_toEndOf="@id/speedPanel" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/photoButton"
+        android:layout_width="92dp"
+        android:layout_height="54dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/photo"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/button"
+        app:cornerRadius="27dp"
+        app:layout_constraintBottom_toTopOf="@id/recordButton"
+        app:layout_constraintEnd_toEndOf="@id/recordButton"
+        app:layout_constraintStart_toStartOf="@id/recordButton" />
+
+    <LinearLayout
+        android:id="@+id/rockerPanel"
+        android:layout_width="112dp"
+        android:layout_height="0dp"
+        android:layout_margin="16dp"
+        android:orientation="vertical"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHeight_percent="0.72"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/teleButton"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginBottom="5dp"
+            android:layout_weight="1"
+            android:background="@drawable/control_button"
+            android:gravity="center"
+            android:text="@string/tele"
+            android:textColor="@color/white"
+            android:textSize="30sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/wideButton"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="5dp"
+            android:layout_weight="1"
+            android:background="@drawable/control_button"
+            android:gravity="center"
+            android:text="@string/wide"
+            android:textColor="@color/white"
+            android:textSize="30sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
