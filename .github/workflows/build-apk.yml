@@ -44,6 +44,40 @@ jobs:
           mkdir -p ../../app/src/main/jniLibs
           cargo ndk -t arm64-v8a --platform 26 -o ../../app/src/main/jniLibs build --release
 
+      - name: Compilar exportador FFmpeg 480i
+        run: |
+          curl -L --fail --retry 3 https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz -o /tmp/ffmpeg.tar.xz
+          mkdir -p /tmp/ffmpeg-src /tmp/ffmpeg-out app/src/main/jniLibs/arm64-v8a
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-src --strip-components=1
+          cd /tmp/ffmpeg-src
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          TARGET="aarch64-linux-android"
+          ./configure \
+            --prefix=/tmp/ffmpeg-out \
+            --target-os=android --arch=aarch64 --cpu=armv8-a \
+            --enable-cross-compile \
+            --cc="$TOOLCHAIN/bin/${TARGET}26-clang" \
+            --cxx="$TOOLCHAIN/bin/${TARGET}26-clang++" \
+            --ar="$TOOLCHAIN/bin/llvm-ar" \
+            --ranlib="$TOOLCHAIN/bin/llvm-ranlib" \
+            --strip="$TOOLCHAIN/bin/llvm-strip" \
+            --nm="$TOOLCHAIN/bin/llvm-nm" \
+            --enable-pic --enable-small --disable-shared --enable-static \
+            --disable-doc --disable-debug --disable-network --disable-autodetect \
+            --disable-programs --enable-ffmpeg \
+            --disable-everything \
+            --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample \
+            --enable-protocol=file,pipe \
+            --enable-demuxer=mov,rawvideo \
+            --enable-parser=aac \
+            --enable-decoder=aac,rawvideo \
+            --enable-encoder=mpeg2video,mp2 \
+            --enable-muxer=mpeg \
+            --enable-filter=scale,format \
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
+          make -j2 ffmpeg
+          cp ffmpeg "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libffmpeg.so"
+
       - name: Compilar APK de teste
         run: gradle :app:assembleDebug --stacktrace
 
