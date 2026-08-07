@@ -77,6 +77,14 @@
             android:stepSize="0.05"
             app:thumbColor="@color/white"
             app:trackColorActive="@color/red_record" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/vhsMotionSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Movimento VHS (60 campos)"
+            android:textColor="@color/white"
+            android:textSize="13sp" />
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton

@@ -37,6 +37,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         val durationUs = sourceFormat.getLong(MediaFormat.KEY_DURATION)
         val rotation = sourceFormat.getInteger(MediaFormat.KEY_ROTATION, 0)
         val sourceMime = sourceFormat.getString(MediaFormat.KEY_MIME)!!
+        val sourceFps = sourceFormat.getInteger(MediaFormat.KEY_FRAME_RATE, 30)
         extractor.selectTrack(videoTrack)
 
         val values = ContentValues().apply {
@@ -54,7 +55,10 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
             resolver.openFileDescriptor(output, "rw")!!.use { descriptor ->
                 val muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                 if (rotation != 0) muxer.setOrientationHint(rotation)
-                transcode(extractor, videoTrack, audioTrack, sourceMime, sourceFormat, muxer, durationUs, progress)
+                transcode(
+                    extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
+                    muxer, durationUs, sourceFps >= 50, progress
+                )
             }
             if (Build.VERSION.SDK_INT >= 29) {
                 resolver.update(output, ContentValues().apply {
@@ -78,6 +82,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         sourceFormat: MediaFormat,
         muxer: MediaMuxer,
         durationUs: Long,
+        emulateVhsFields: Boolean,
         progress: (Int) -> Unit
     ) {
         val decoder = MediaCodec.createDecoderByType(sourceMime)
@@ -140,6 +145,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
                             check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
                                 "Falha no núcleo NTSC-RS"
                             }
+                            if (emulateVhsFields) reconstructVhsField(rgba, frame)
                             queueEncoder(encoder, rgba, decoderInfo.presentationTimeUs, encoderColor)
                             progress(((decoderInfo.presentationTimeUs * 100L) / durationUs.coerceAtLeast(1)).toInt().coerceIn(0, 99))
                         }
@@ -258,6 +264,24 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
     private fun sample(plane: Image.Plane, x: Int, y: Int): Int {
         val index = y * plane.rowStride + x * plane.pixelStride
         return plane.buffer.get(index).toInt() and 0xff
+    }
+
+    /**
+     * Mantém um campo temporal por quadro de 60 fps e reconstrói as linhas
+     * ausentes. Assim a saída continua sendo 60p compatível, mas conserva a
+     * cadência e a resolução vertical de movimento de uma câmera 480i.
+     */
+    private fun reconstructVhsField(rgba: ByteArray, frameNumber: Int) {
+        val keptParity = frameNumber and 1
+        for (y in 0 until HEIGHT) {
+            if ((y and 1) == keptParity) continue
+            val sourceY = when {
+                y == 0 -> 1
+                y == HEIGHT - 1 -> HEIGHT - 2
+                else -> if (keptParity == 0) y - 1 else y + 1
+            }
+            System.arraycopy(rgba, sourceY * WIDTH * 4, rgba, y * WIDTH * 4, WIDTH * 4)
+        }
     }
 
     private fun rgbaToYuv420(
