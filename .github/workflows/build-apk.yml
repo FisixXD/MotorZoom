@@ -65,15 +65,6 @@ jobs:
             --enable-pic --enable-small --disable-shared --enable-static \
             --disable-doc --disable-debug --disable-network --disable-autodetect \
             --disable-programs --enable-ffmpeg \
-            --disable-everything \
-            --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample \
-            --enable-protocol=file,pipe \
-            --enable-demuxer=mov,rawvideo \
-            --enable-parser=aac \
-            --enable-decoder=aac,rawvideo \
-            --enable-encoder=mpeg2video,mp2 \
-            --enable-muxer=mpeg \
-            --enable-filter=scale,format,aresample \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
           make -j2 ffmpeg
           cp ffmpeg "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libffmpeg.so"
