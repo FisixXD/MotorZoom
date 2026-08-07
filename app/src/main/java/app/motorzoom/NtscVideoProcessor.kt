@@ -2,6 +2,7 @@ package app.motorzoom
 
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.Context
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -12,11 +13,14 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import java.nio.ByteBuffer
+import java.io.File
+import java.io.OutputStream
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Offline 480p pipeline: MediaCodec -> official ntsc-rs core -> MediaCodec. */
-class NtscVideoProcessor(private val resolver: ContentResolver) {
+class NtscVideoProcessor(private val context: Context) {
+    private val resolver: ContentResolver = context.contentResolver
     data class MotorZoomSettings(
         val enabled: Boolean = false,
         val startUs: Long = 0L,
@@ -28,6 +32,8 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
     companion object {
         private const val WIDTH = 640
         private const val HEIGHT = 480
+        private const val INTERLACED_WIDTH = 720
+        private const val INTERLACED_HEIGHT = 480
         private const val TIMEOUT_US = 10_000L
     }
 
@@ -35,9 +41,14 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         input: Uri,
         preset: String,
         motorZoom: MotorZoomSettings,
+        trueInterlaced: Boolean,
         progress: (Int) -> Unit
     ): Uri {
         check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
+
+        if (trueInterlaced) {
+            return processTrueInterlaced(input, motorZoom, progress)
+        }
 
         val extractor = MediaExtractor()
         resolver.openFileDescriptor(input, "r")!!.use { extractor.setDataSource(it.fileDescriptor) }
@@ -85,6 +96,195 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         } finally {
             extractor.release()
         }
+    }
+
+    /**
+     * Creates a standards-shaped NTSC file: 720x480 MPEG-2, 29.97 coded frames and
+     * 59.94 temporal fields per second. Two consecutive 60p source frames are woven
+     * into one top-field-first frame, so the fields contain different moments.
+     */
+    private fun processTrueInterlaced(
+        input: Uri,
+        motorZoom: MotorZoomSettings,
+        progress: (Int) -> Unit
+    ): Uri {
+        val extractor = MediaExtractor()
+        resolver.openFileDescriptor(input, "r")!!.use { extractor.setDataSource(it.fileDescriptor) }
+        val videoTrack = (0 until extractor.trackCount).firstOrNull {
+            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+        } ?: error("O arquivo não contém vídeo")
+        val sourceFormat = extractor.getTrackFormat(videoTrack)
+        val sourceFps = sourceFormat.getInteger(MediaFormat.KEY_FRAME_RATE, 0)
+        check(sourceFps >= 50) {
+            "480i real precisa de vídeo 59,94/60 fps; este arquivo anuncia $sourceFps fps"
+        }
+        val durationUs = sourceFormat.getLong(MediaFormat.KEY_DURATION)
+        val sourceMime = sourceFormat.getString(MediaFormat.KEY_MIME)!!
+        extractor.selectTrack(videoTrack)
+
+        val sourceCopy = File.createTempFile("motorzoom_source_", ".mp4", context.cacheDir)
+        val encoded = File.createTempFile("motorzoom_480i_", ".mpg", context.cacheDir)
+        try {
+            resolver.openInputStream(input)!!.use { source ->
+                sourceCopy.outputStream().use { target -> source.copyTo(target) }
+            }
+            val ffmpeg = File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so")
+            check(ffmpeg.canExecute()) { "Exportador 480i não foi incluído nesta compilação" }
+            val command = listOf(
+                ffmpeg.absolutePath,
+                "-hide_banner", "-loglevel", "warning", "-y",
+                "-f", "rawvideo", "-pixel_format", "rgba",
+                "-video_size", "${INTERLACED_WIDTH}x${INTERLACED_HEIGHT}",
+                "-framerate", "30000/1001", "-i", "pipe:0",
+                "-i", sourceCopy.absolutePath,
+                "-map", "0:v:0", "-map", "1:a:0?",
+                "-c:v", "mpeg2video", "-pix_fmt", "yuv420p",
+                "-flags", "+ildct+ilme", "-top", "1",
+                "-aspect", "4:3", "-r", "30000/1001",
+                "-b:v", "8000k", "-maxrate", "9000k", "-bufsize", "1835008",
+                "-g", "15",
+                "-c:a", "mp2", "-b:a", "192k", "-ar", "48000",
+                "-shortest", "-f", "mpeg", encoded.absolutePath
+            )
+            val process = ProcessBuilder(command).redirectErrorStream(true).start()
+            val log = StringBuilder()
+            val logReader = Thread {
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (log.length < 8_000) log.appendLine(line)
+                    }
+                }
+            }.apply { start() }
+
+            var pipelineError: Throwable? = null
+            try {
+                process.outputStream.buffered(1 shl 20).use { pipe ->
+                    decodeAndWeave(
+                        extractor, sourceMime, sourceFormat, durationUs,
+                        motorZoom, pipe, progress
+                    )
+                }
+            } catch (error: Throwable) {
+                pipelineError = error
+                process.destroy()
+            }
+            val exit = process.waitFor()
+            logReader.join()
+            if (pipelineError != null) throw pipelineError
+            check(exit == 0 && encoded.length() > 0L) {
+                "FFmpeg falhou ao criar 480i: ${log.toString().takeLast(1200)}"
+            }
+
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "MotorZoom_NTSC_480i_${System.currentTimeMillis()}.mpg")
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mpeg")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/MotorZoom")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+            val output = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("Não foi possível criar o vídeo 480i")
+            try {
+                resolver.openOutputStream(output, "w")!!.use { destination ->
+                    encoded.inputStream().use { source -> source.copyTo(destination) }
+                }
+                if (Build.VERSION.SDK_INT >= 29) {
+                    resolver.update(output, ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                    }, null, null)
+                }
+                progress(100)
+                return output
+            } catch (error: Throwable) {
+                resolver.delete(output, null, null)
+                throw error
+            }
+        } finally {
+            extractor.release()
+            sourceCopy.delete()
+            encoded.delete()
+        }
+    }
+
+    private fun decodeAndWeave(
+        extractor: MediaExtractor,
+        sourceMime: String,
+        sourceFormat: MediaFormat,
+        durationUs: Long,
+        motorZoom: MotorZoomSettings,
+        pipe: OutputStream,
+        progress: (Int) -> Unit
+    ) {
+        val decoder = MediaCodec.createDecoderByType(sourceMime)
+        decoder.configure(sourceFormat, null, null, 0)
+        decoder.start()
+        val info = MediaCodec.BufferInfo()
+        var inputDone = false
+        var outputDone = false
+        var frameNumber = 0
+        var firstField: ByteArray? = null
+        try {
+            while (!outputDone) {
+                if (!inputDone) {
+                    val inputIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
+                    if (inputIndex >= 0) {
+                        val buffer = decoder.getInputBuffer(inputIndex)!!
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) {
+                            decoder.queueInputBuffer(
+                                inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
+                            inputDone = true
+                        } else {
+                            decoder.queueInputBuffer(inputIndex, 0, size, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+
+                val outputIndex = decoder.dequeueOutputBuffer(info, TIMEOUT_US)
+                if (outputIndex >= 0) {
+                    if (info.size > 0) {
+                        val image = decoder.getOutputImage(outputIndex)
+                            ?: error("O decodificador do aparelho não forneceu quadros YUV")
+                        val rgba = imageToRgba(
+                            image, INTERLACED_WIDTH, INTERLACED_HEIGHT,
+                            zoomAt(info.presentationTimeUs, motorZoom)
+                        )
+                        image.close()
+                        check(NativeNtsc.processRgba(
+                            rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT, frameNumber++
+                        )) { "Falha no núcleo NTSC-RS" }
+                        val earlier = firstField
+                        if (earlier == null) {
+                            firstField = rgba
+                        } else {
+                            pipe.write(weaveTopFieldFirst(earlier, rgba))
+                            firstField = null
+                        }
+                        progress(((info.presentationTimeUs * 99L) /
+                            durationUs.coerceAtLeast(1)).toInt().coerceIn(0, 99))
+                    }
+                    outputDone = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    decoder.releaseOutputBuffer(outputIndex, false)
+                }
+            }
+        } finally {
+            decoder.stop()
+            decoder.release()
+        }
+    }
+
+    private fun weaveTopFieldFirst(earlier: ByteArray, later: ByteArray): ByteArray {
+        val rowBytes = INTERLACED_WIDTH * 4
+        val output = ByteArray(INTERLACED_WIDTH * INTERLACED_HEIGHT * 4)
+        for (row in 0 until INTERLACED_HEIGHT) {
+            val source = if (row and 1 == 0) earlier else later
+            val offset = row * rowBytes
+            source.copyInto(output, offset, offset, offset + rowBytes)
+        }
+        return output
     }
 
     private fun transcode(
