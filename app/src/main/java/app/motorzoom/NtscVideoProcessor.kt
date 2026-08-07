@@ -22,7 +22,12 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         private const val TIMEOUT_US = 10_000L
     }
 
-    fun process(input: Uri, preset: String, progress: (Int) -> Unit): Uri {
+    fun process(
+        input: Uri,
+        preset: String,
+        enableVhsFields: Boolean,
+        progress: (Int) -> Unit
+    ): Uri {
         check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
 
         val extractor = MediaExtractor()
@@ -57,7 +62,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
                 if (rotation != 0) muxer.setOrientationHint(rotation)
                 transcode(
                     extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
-                    muxer, durationUs, sourceFps >= 50, progress
+                    muxer, durationUs, enableVhsFields && sourceFps >= 50, progress
                 )
             }
             if (Build.VERSION.SDK_INT >= 29) {

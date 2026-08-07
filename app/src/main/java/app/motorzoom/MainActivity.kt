@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var lastZoomFrameNanos = 0L
     private var presetJson = ""
     private var presetName = "Padrão"
+    private var vhsFieldsEnabled = false
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) startNtscProcessing(uri)
@@ -315,6 +316,12 @@ class MainActivity : AppCompatActivity() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS offline")
             .setMessage("Preset atual: $presetName\nA saída é criada em 640×480; o original não é alterado.")
+            .setMultiChoiceItems(
+                arrayOf("Movimento VHS para vídeos 50/60 fps"),
+                booleanArrayOf(vhsFieldsEnabled)
+            ) { _, _, checked ->
+                vhsFieldsEnabled = checked
+            }
             .setPositiveButton("Escolher vídeo") { _, _ -> videoPicker.launch(arrayOf("video/*")) }
             .setNeutralButton("Importar preset") { _, _ ->
                 presetPicker.launch(arrayOf("application/json", "text/plain"))
@@ -328,7 +335,11 @@ class MainActivity : AppCompatActivity() {
         binding.ntscButton.text = "0%"
         cameraExecutor.execute {
             try {
-                NtscVideoProcessor(contentResolver).process(uri, presetJson) { percent ->
+                NtscVideoProcessor(contentResolver).process(
+                    uri,
+                    presetJson,
+                    vhsFieldsEnabled
+                ) { percent ->
                     runOnUiThread { binding.ntscButton.text = "$percent%" }
                 }
                 runOnUiThread {
