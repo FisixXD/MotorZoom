@@ -18,17 +18,6 @@
         app:layout_constraintTop_toTopOf="parent"
         app:scaleType="fillCenter" />
 
-    <TextureView
-        android:id="@+id/vhs60Preview"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintDimensionRatio="16:9"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
     <TextView
         android:id="@+id/zoomLabel"
         android:layout_width="wrap_content"
@@ -93,7 +82,7 @@
             android:id="@+id/modeButton"
             android:layout_width="match_parent"
             android:layout_height="42dp"
-            android:text="MODO: 4:3 30"
+            android:text="CÂMERA: 4:3 30"
             android:textColor="@color/white"
             android:textSize="12sp"
             app:backgroundTint="@color/button"
