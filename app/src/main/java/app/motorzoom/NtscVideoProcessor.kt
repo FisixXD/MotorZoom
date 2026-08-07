@@ -151,6 +151,7 @@ class NtscVideoProcessor(private val context: Context) {
             val command = listOf(
                 ffmpeg.absolutePath,
                 "-hide_banner", "-loglevel", "warning", "-y",
+                "-thread_queue_size", "64",
                 "-f", "rawvideo", "-pixel_format", "rgba",
                 "-video_size", "${INTERLACED_WIDTH}x${INTERLACED_HEIGHT}",
                 "-framerate", "30000/1001", "-i", "pipe:0",
