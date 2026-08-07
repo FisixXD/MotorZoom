@@ -78,6 +78,16 @@
             app:thumbColor="@color/white"
             app:trackColorActive="@color/red_record" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/modeButton"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:text="MODO: 4:3 30"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            app:backgroundTint="@color/button"
+            app:cornerRadius="12dp" />
+
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton
