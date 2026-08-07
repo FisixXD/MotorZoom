@@ -73,7 +73,7 @@ jobs:
             --enable-decoder=aac,rawvideo \
             --enable-encoder=mpeg2video,mp2 \
             --enable-muxer=mpeg \
-            --enable-filter=scale,format \
+            --enable-filter=scale,format,aresample \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
           make -j2 ffmpeg
           cp ffmpeg "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libffmpeg.so"
