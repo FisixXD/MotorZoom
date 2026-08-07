@@ -407,6 +407,15 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(enabled)
 
+        val interlacedOutput = CheckBox(this).apply {
+            text = "Saída NTSC 480i real (.mpg)"
+            isChecked = true
+        }
+        content.addView(interlacedOutput)
+        content.addView(TextView(this).apply {
+            text = "Use um vídeo 59,94/60 fps. Cada campo usará um instante diferente, como numa filmadora NTSC."
+        })
+
         fun addNumberField(label: String, initial: String): EditText {
             content.addView(TextView(this).apply { text = label })
             return EditText(this).also {
@@ -470,10 +479,10 @@ class MainActivity : AppCompatActivity() {
                     startZoom = if (zoomIn) 1f else maximum,
                     endZoom = if (zoomIn) maximum else 1f
                 )
-                startNtscProcessing(uri, settings)
+                startNtscProcessing(uri, settings, interlacedOutput.isChecked)
             }
             .setNeutralButton("Somente NTSC") { _, _ ->
-                startNtscProcessing(uri, NtscVideoProcessor.MotorZoomSettings())
+                startNtscProcessing(uri, NtscVideoProcessor.MotorZoomSettings(), interlacedOutput.isChecked)
             }
             .setNegativeButton("Cancelar", null)
             .show()
@@ -492,22 +501,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startNtscProcessing(uri: Uri, motorZoom: NtscVideoProcessor.MotorZoomSettings) {
+    private fun startNtscProcessing(
+        uri: Uri,
+        motorZoom: NtscVideoProcessor.MotorZoomSettings,
+        trueInterlaced: Boolean
+    ) {
         binding.ntscButton.isEnabled = false
         binding.ntscButton.text = "0%"
         cameraExecutor.execute {
             try {
-                NtscVideoProcessor(contentResolver).process(
+                NtscVideoProcessor(applicationContext).process(
                     uri,
                     presetJson,
-                    motorZoom
+                    motorZoom,
+                    trueInterlaced
                 ) { percent ->
                     runOnUiThread { binding.ntscButton.text = "$percent%" }
                 }
                 runOnUiThread {
                     binding.ntscButton.isEnabled = true
                     binding.ntscButton.text = getString(R.string.ntsc_rs)
-                    Toast.makeText(this, "Vídeo NTSC salvo em Movies/MotorZoom", Toast.LENGTH_LONG).show()
+                    val format = if (trueInterlaced) "NTSC 480i (.mpg)" else "MP4 progressivo"
+                    Toast.makeText(this, "$format salvo em Movies/MotorZoom", Toast.LENGTH_LONG).show()
                 }
             } catch (error: Throwable) {
                 runOnUiThread {
