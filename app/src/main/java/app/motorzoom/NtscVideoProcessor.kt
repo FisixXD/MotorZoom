@@ -12,10 +12,19 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import java.nio.ByteBuffer
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Offline 480p pipeline: MediaCodec -> official ntsc-rs core -> MediaCodec. */
 class NtscVideoProcessor(private val resolver: ContentResolver) {
+    data class MotorZoomSettings(
+        val enabled: Boolean = false,
+        val startUs: Long = 0L,
+        val durationUs: Long = 1L,
+        val startZoom: Float = 1f,
+        val endZoom: Float = 1f
+    )
+
     companion object {
         private const val WIDTH = 640
         private const val HEIGHT = 480
@@ -25,6 +34,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
     fun process(
         input: Uri,
         preset: String,
+        motorZoom: MotorZoomSettings,
         progress: (Int) -> Unit
     ): Uri {
         check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
@@ -60,7 +70,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
                 if (rotation != 0) muxer.setOrientationHint(rotation)
                 transcode(
                     extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
-                    muxer, durationUs, progress
+                    muxer, durationUs, motorZoom, progress
                 )
             }
             if (Build.VERSION.SDK_INT >= 29) {
@@ -85,6 +95,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         sourceFormat: MediaFormat,
         muxer: MediaMuxer,
         durationUs: Long,
+        motorZoom: MotorZoomSettings,
         progress: (Int) -> Unit
     ) {
         val decoder = MediaCodec.createDecoderByType(sourceMime)
@@ -142,7 +153,8 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
                         if (decoderInfo.size > 0) {
                             val image = decoder.getOutputImage(index)
                                 ?: error("O decodificador do aparelho não forneceu quadros YUV")
-                            val rgba = imageToRgba(image, WIDTH, HEIGHT)
+                            val zoom = zoomAt(decoderInfo.presentationTimeUs, motorZoom)
+                            val rgba = imageToRgba(image, WIDTH, HEIGHT, zoom)
                             image.close()
                             check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
                                 "Falha no núcleo NTSC-RS"
@@ -240,20 +252,42 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         }
     }
 
-    private fun imageToRgba(image: Image, outWidth: Int, outHeight: Int): ByteArray {
+    /** Trapezoidal motor curve: 120 ms acceleration, constant speed, 120 ms braking. */
+    private fun zoomAt(timeUs: Long, settings: MotorZoomSettings): Float {
+        if (!settings.enabled) return 1f
+        val raw = ((timeUs - settings.startUs).toDouble() / settings.durationUs.coerceAtLeast(1))
+            .coerceIn(0.0, 1.0)
+        val ramp = min(0.25, 120_000.0 / settings.durationUs.coerceAtLeast(1))
+        val position = when {
+            ramp <= 0.0 -> raw
+            raw < ramp -> raw * raw / (2.0 * ramp * (1.0 - ramp))
+            raw > 1.0 - ramp -> {
+                1.0 - (1.0 - raw) * (1.0 - raw) / (2.0 * ramp * (1.0 - ramp))
+            }
+            else -> (raw - ramp / 2.0) / (1.0 - ramp)
+        }
+        return (settings.startZoom + (settings.endZoom - settings.startZoom) * position.toFloat())
+            .coerceIn(1f, 4f)
+    }
+
+    private fun imageToRgba(image: Image, outWidth: Int, outHeight: Int, zoom: Float): ByteArray {
         val crop = image.cropRect
         val planes = image.planes
         val output = ByteArray(outWidth * outHeight * 4)
         val targetRatio = outWidth.toFloat() / outHeight
         val sourceRatio = crop.width().toFloat() / crop.height()
-        val sampleWidth = if (sourceRatio > targetRatio) {
+        val baseWidth = if (sourceRatio > targetRatio) {
             (crop.height() * targetRatio).toInt()
         } else crop.width()
-        val sampleHeight = if (sourceRatio < targetRatio) {
+        val baseHeight = if (sourceRatio < targetRatio) {
             (crop.width() / targetRatio).toInt()
         } else crop.height()
-        val sampleLeft = crop.left + (crop.width() - sampleWidth) / 2
-        val sampleTop = crop.top + (crop.height() - sampleHeight) / 2
+        val baseLeft = crop.left + (crop.width() - baseWidth) / 2
+        val baseTop = crop.top + (crop.height() - baseHeight) / 2
+        val sampleWidth = (baseWidth / zoom).roundToInt().coerceAtLeast(2)
+        val sampleHeight = (baseHeight / zoom).roundToInt().coerceAtLeast(2)
+        val sampleLeft = baseLeft + (baseWidth - sampleWidth) / 2
+        val sampleTop = baseTop + (baseHeight - sampleHeight) / 2
         for (dy in 0 until outHeight) {
             val sy = sampleTop + (dy * sampleHeight / outHeight)
             for (dx in 0 until outWidth) {
