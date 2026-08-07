@@ -8,9 +8,17 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.text.InputType
 import android.util.Rational
 import android.view.MotionEvent
 import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -32,6 +40,7 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
+import com.google.android.material.slider.Slider
 import app.motorzoom.databinding.ActivityMainBinding
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -49,7 +58,6 @@ class MainActivity : AppCompatActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var imageCapture: ImageCapture? = null
     private var recording: Recording? = null
-    private var vhs60Camera: Vhs60Camera? = null
 
     private var currentZoom = 1f
     private var minZoom = 1f
@@ -63,10 +71,9 @@ class MainActivity : AppCompatActivity() {
     private var latestZoomRequest = 1f
     private var presetJson = ""
     private var presetName = "Padrão"
-    private var vhs60Mode = false
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) startNtscProcessing(uri)
+        if (uri != null) showPostZoomDialog(uri)
     }
 
     private val presetPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -133,33 +140,6 @@ class MainActivity : AppCompatActivity() {
         hideSystemUi()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
-        vhs60Camera = Vhs60Camera(this, binding.vhs60Preview, object : Vhs60Camera.Listener {
-            override fun onReady(minimum: Float, maximum: Float, fpsRange: android.util.Range<Int>) {
-                minZoom = minimum
-                maxZoom = maximum
-                currentZoom = currentZoom.coerceIn(minZoom, maxZoom)
-                Toast.makeText(
-                    this@MainActivity,
-                    "VHS60 pronto • câmera ${fpsRange.lower}-${fpsRange.upper} fps",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-
-            override fun onRecordingStarted() {
-                binding.recordButton.text = getString(R.string.stop)
-            }
-
-            override fun onRecordingFinished(uri: Uri, measuredFps: Float?) {
-                binding.recordButton.text = getString(R.string.record)
-                val measured = measuredFps?.let { String.format(Locale.US, "%.1f", it) } ?: "?"
-                Toast.makeText(this@MainActivity, "Vídeo salvo • $measured fps", Toast.LENGTH_LONG).show()
-            }
-
-            override fun onError(message: String) {
-                binding.recordButton.text = getString(R.string.record)
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-            }
-        })
         setupControls()
 
         if (hasCameraPermission()) startCamera() else requestPermissions()
@@ -178,13 +158,11 @@ class MainActivity : AppCompatActivity() {
         binding.photoButton.setOnClickListener { takePhoto() }
         binding.ntscButton.setOnClickListener { showProcessorMenu() }
         binding.modeButton.setOnClickListener {
-            if (recording != null || vhs60Camera?.isBusy == true) {
-                Toast.makeText(this, "Pare a gravação antes de mudar o modo", Toast.LENGTH_SHORT).show()
-            } else {
-                vhs60Mode = !vhs60Mode
-                updateModeUi()
-                startCamera()
-            }
+            Toast.makeText(
+                this,
+                "Para 60 fps, grave na câmera Samsung e importe pelo botão NTSC-RS",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -225,10 +203,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun submitZoom(value: Float) {
         latestZoomRequest = value
-        if (vhs60Mode) {
-            vhs60Camera?.setZoomRatio(value)
-            return
-        }
         dispatchCameraXZoom()
     }
 
@@ -245,14 +219,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCamera() {
-        if (vhs60Mode) {
-            startVhs60Camera()
-            return
-        }
-        vhs60Camera?.stop()
-        binding.vhs60Preview.visibility = View.GONE
-        binding.previewView.visibility = View.VISIBLE
-
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             val provider = providerFuture.get()
@@ -308,31 +274,7 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun startVhs60Camera() {
-        ProcessCameraProvider.getInstance(this).addListener({
-            ProcessCameraProvider.getInstance(this).get().unbindAll()
-            camera = null
-            videoCapture = null
-            imageCapture = null
-            zoomRequestInFlight = false
-            binding.previewView.visibility = View.GONE
-            binding.vhs60Preview.visibility = View.VISIBLE
-            vhs60Camera?.start()
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun updateModeUi() {
-        binding.modeButton.text = if (vhs60Mode) "MODO: VHS 60 (16:9)" else "MODO: 4:3 30"
-        binding.photoButton.isEnabled = !vhs60Mode
-    }
-
     private fun toggleRecording() {
-        if (vhs60Mode) {
-            if (vhs60Camera?.isRecording == true) vhs60Camera?.stopRecording()
-            else vhs60Camera?.startRecording()
-            return
-        }
-
         val activeRecording = recording
         if (activeRecording != null) {
             activeRecording.stop()
@@ -434,7 +376,7 @@ class MainActivity : AppCompatActivity() {
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS • $presetName")
-            .setMessage("Os campos e o entrelaçamento seguem o preset do NTSC-RS.")
+            .setMessage("Importe um vídeo da câmera Samsung para aplicar zoom de filmadora, recorte 4:3 e NTSC-RS.")
             .setPositiveButton("Escolher vídeo") { _, _ -> videoPicker.launch(arrayOf("video/*")) }
             .setNeutralButton("Importar preset") { _, _ ->
                 presetPicker.launch(arrayOf("application/json", "text/plain"))
@@ -443,14 +385,122 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun startNtscProcessing(uri: Uri) {
+    private fun showPostZoomDialog(uri: Uri) {
+        val durationSeconds = readVideoDurationSeconds(uri)
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, 0)
+        }
+        val scroll = ScrollView(this).apply { addView(content) }
+
+        val info = TextView(this).apply {
+            text = if (durationSeconds != null) {
+                "Vídeo: ${String.format(Locale.US, "%.1f", durationSeconds)} s • saída 4:3"
+            } else "Saída 4:3 • entrelaçamento conforme o preset"
+        }
+        content.addView(info)
+
+        val enabled = CheckBox(this).apply {
+            text = "Aplicar zoom motorizado em pós"
+            isChecked = true
+        }
+        content.addView(enabled)
+
+        fun addNumberField(label: String, initial: String): EditText {
+            content.addView(TextView(this).apply { text = label })
+            return EditText(this).also {
+                it.setText(initial)
+                it.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                it.setSelectAllOnFocus(true)
+                content.addView(it)
+            }
+        }
+
+        val startField = addNumberField("Começar em (segundos)", "0.0")
+        val suggestedDuration = min(5f, durationSeconds ?: 5f).coerceAtLeast(0.5f)
+        val durationField = addNumberField(
+            "Duração do zoom (segundos)",
+            String.format(Locale.US, "%.1f", suggestedDuration)
+        )
+
+        content.addView(TextView(this).apply { text = "Direção" })
+        val direction = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                arrayOf("Aproximar: 1× → zoom final", "Afastar: zoom inicial → 1×")
+            )
+        }
+        content.addView(direction)
+
+        val zoomLabel = TextView(this).apply { text = "Zoom máximo: 2.00×" }
+        content.addView(zoomLabel)
+        val zoomSlider = Slider(this).apply {
+            valueFrom = 1.1f
+            valueTo = 4f
+            stepSize = 0.05f
+            value = 2f
+            addOnChangeListener { _, zoom, _ ->
+                zoomLabel.text = String.format(Locale.US, "Zoom máximo: %.2f×", zoom)
+            }
+        }
+        content.addView(zoomSlider)
+
+        content.addView(TextView(this).apply {
+            text = "Modo Filmadora: velocidade constante com partida e parada suaves de 120 ms."
+        })
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Zoom motorizado")
+            .setView(scroll)
+            .setPositiveButton("Processar") { _, _ ->
+                val start = startField.text.toString().replace(',', '.').toFloatOrNull() ?: 0f
+                val duration = durationField.text.toString().replace(',', '.').toFloatOrNull() ?: suggestedDuration
+                val endLimit = durationSeconds ?: Float.MAX_VALUE
+                val safeStart = start.coerceIn(0f, endLimit)
+                val safeDuration = duration.coerceAtLeast(0.1f)
+                    .coerceAtMost((endLimit - safeStart).coerceAtLeast(0.1f))
+                val maximum = zoomSlider.value
+                val zoomIn = direction.selectedItemPosition == 0
+                val settings = NtscVideoProcessor.MotorZoomSettings(
+                    enabled = enabled.isChecked,
+                    startUs = (safeStart * 1_000_000f).toLong(),
+                    durationUs = (safeDuration * 1_000_000f).toLong(),
+                    startZoom = if (zoomIn) 1f else maximum,
+                    endZoom = if (zoomIn) maximum else 1f
+                )
+                startNtscProcessing(uri, settings)
+            }
+            .setNeutralButton("Somente NTSC") { _, _ ->
+                startNtscProcessing(uri, NtscVideoProcessor.MotorZoomSettings())
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun readVideoDurationSeconds(uri: Uri): Float? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(this, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()?.div(1000f)
+        } catch (_: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun startNtscProcessing(uri: Uri, motorZoom: NtscVideoProcessor.MotorZoomSettings) {
         binding.ntscButton.isEnabled = false
         binding.ntscButton.text = "0%"
         cameraExecutor.execute {
             try {
                 NtscVideoProcessor(contentResolver).process(
                     uri,
-                    presetJson
+                    presetJson,
+                    motorZoom
                 ) { percent ->
                     runOnUiThread { binding.ntscButton.text = "$percent%" }
                 }
@@ -486,7 +536,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         stopZoom()
         recording?.stop()
-        vhs60Camera?.stop()
         cameraExecutor.shutdown()
         super.onDestroy()
     }
