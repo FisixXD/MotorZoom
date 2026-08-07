@@ -314,8 +314,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("NTSC-RS offline")
-            .setMessage("Preset atual: $presetName\nA saída é criada em 640×480; o original não é alterado.")
+            .setTitle("NTSC-RS • $presetName")
             .setMultiChoiceItems(
                 arrayOf("Movimento VHS para vídeos 50/60 fps"),
                 booleanArrayOf(vhsFieldsEnabled)
