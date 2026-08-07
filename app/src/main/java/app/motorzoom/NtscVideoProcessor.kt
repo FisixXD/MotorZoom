@@ -15,6 +15,9 @@ import android.provider.MediaStore
 import java.nio.ByteBuffer
 import java.io.File
 import java.io.OutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -29,6 +32,19 @@ class NtscVideoProcessor(private val context: Context) {
         val endZoom: Float = 1f
     )
 
+    data class VisualSettings(
+        val colorEnabled: Boolean = false,
+        val temperature: Float = 0f,
+        val saturation: Float = 1f,
+        val contrast: Float = 1f,
+        val brightness: Float = 0f,
+        val tint: Float = 0f,
+        val fishEyeEnabled: Boolean = false,
+        val fishEyeStrength: Float = 0.35f,
+        val overlayEnabled: Boolean = false,
+        val overlayStartEpochMs: Long = 0L
+    )
+
     companion object {
         private const val WIDTH = 640
         private const val HEIGHT = 480
@@ -41,13 +57,14 @@ class NtscVideoProcessor(private val context: Context) {
         input: Uri,
         preset: String,
         motorZoom: MotorZoomSettings,
+        visual: VisualSettings,
         trueInterlaced: Boolean,
         progress: (Int) -> Unit
     ): Uri {
         check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
 
         if (trueInterlaced) {
-            return processTrueInterlaced(input, motorZoom, progress)
+            return processTrueInterlaced(input, motorZoom, visual, progress)
         }
 
         val extractor = MediaExtractor()
@@ -81,7 +98,7 @@ class NtscVideoProcessor(private val context: Context) {
                 if (rotation != 0) muxer.setOrientationHint(rotation)
                 transcode(
                     extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
-                    muxer, durationUs, motorZoom, progress
+                    muxer, durationUs, motorZoom, visual, progress
                 )
             }
             if (Build.VERSION.SDK_INT >= 29) {
@@ -106,6 +123,7 @@ class NtscVideoProcessor(private val context: Context) {
     private fun processTrueInterlaced(
         input: Uri,
         motorZoom: MotorZoomSettings,
+        visual: VisualSettings,
         progress: (Int) -> Unit
     ): Uri {
         val extractor = MediaExtractor()
@@ -144,7 +162,7 @@ class NtscVideoProcessor(private val context: Context) {
                 "-b:v", "8000k", "-maxrate", "9000k", "-bufsize", "1835008",
                 "-g", "15",
                 "-c:a", "mp2", "-b:a", "192k", "-ar", "48000",
-                "-shortest", "-f", "mpeg", encoded.absolutePath
+                "-f", "mpeg", encoded.absolutePath
             )
             val process = ProcessBuilder(command).redirectErrorStream(true).start()
             val log = StringBuilder()
@@ -161,19 +179,21 @@ class NtscVideoProcessor(private val context: Context) {
                 process.outputStream.buffered(1 shl 20).use { pipe ->
                     decodeAndWeave(
                         extractor, sourceMime, sourceFormat, durationUs,
-                        motorZoom, pipe, progress
+                        motorZoom, visual, pipe, progress
                     )
                 }
             } catch (error: Throwable) {
                 pipelineError = error
-                process.destroy()
             }
             val exit = process.waitFor()
             logReader.join()
-            if (pipelineError != null) throw pipelineError
-            check(exit == 0 && encoded.length() > 0L) {
-                "FFmpeg falhou ao criar 480i: ${log.toString().takeLast(1200)}"
+            if (exit != 0 || encoded.length() == 0L) {
+                val detail = log.toString().takeLast(1600).ifBlank {
+                    pipelineError?.message ?: "sem detalhes"
+                }
+                error("FFmpeg 480i encerrou com código $exit: $detail")
             }
+            if (pipelineError != null) throw pipelineError
 
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "MotorZoom_NTSC_480i_${System.currentTimeMillis()}.mpg")
@@ -213,6 +233,7 @@ class NtscVideoProcessor(private val context: Context) {
         sourceFormat: MediaFormat,
         durationUs: Long,
         motorZoom: MotorZoomSettings,
+        visual: VisualSettings,
         pipe: OutputStream,
         progress: (Int) -> Unit
     ) {
@@ -250,9 +271,14 @@ class NtscVideoProcessor(private val context: Context) {
                             ?: error("O decodificador do aparelho não forneceu quadros YUV")
                         val rgba = imageToRgba(
                             image, INTERLACED_WIDTH, INTERLACED_HEIGHT,
-                            zoomAt(info.presentationTimeUs, motorZoom)
+                            zoomAt(info.presentationTimeUs, motorZoom),
+                            if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
                         )
                         image.close()
+                        applyVisualEffects(
+                            rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT,
+                            info.presentationTimeUs, visual
+                        )
                         check(NativeNtsc.processRgba(
                             rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT, frameNumber++
                         )) { "Falha no núcleo NTSC-RS" }
@@ -296,6 +322,7 @@ class NtscVideoProcessor(private val context: Context) {
         muxer: MediaMuxer,
         durationUs: Long,
         motorZoom: MotorZoomSettings,
+        visual: VisualSettings,
         progress: (Int) -> Unit
     ) {
         val decoder = MediaCodec.createDecoderByType(sourceMime)
@@ -354,8 +381,14 @@ class NtscVideoProcessor(private val context: Context) {
                             val image = decoder.getOutputImage(index)
                                 ?: error("O decodificador do aparelho não forneceu quadros YUV")
                             val zoom = zoomAt(decoderInfo.presentationTimeUs, motorZoom)
-                            val rgba = imageToRgba(image, WIDTH, HEIGHT, zoom)
+                            val rgba = imageToRgba(
+                                image, WIDTH, HEIGHT, zoom,
+                                if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
+                            )
                             image.close()
+                            applyVisualEffects(
+                                rgba, WIDTH, HEIGHT, decoderInfo.presentationTimeUs, visual
+                            )
                             check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
                                 "Falha no núcleo NTSC-RS"
                             }
@@ -470,7 +503,13 @@ class NtscVideoProcessor(private val context: Context) {
             .coerceIn(1f, 4f)
     }
 
-    private fun imageToRgba(image: Image, outWidth: Int, outHeight: Int, zoom: Float): ByteArray {
+    private fun imageToRgba(
+        image: Image,
+        outWidth: Int,
+        outHeight: Int,
+        zoom: Float,
+        fishEyeStrength: Float
+    ): ByteArray {
         val crop = image.cropRect
         val planes = image.planes
         val output = ByteArray(outWidth * outHeight * 4)
@@ -489,21 +528,147 @@ class NtscVideoProcessor(private val context: Context) {
         val sampleLeft = baseLeft + (baseWidth - sampleWidth) / 2
         val sampleTop = baseTop + (baseHeight - sampleHeight) / 2
         for (dy in 0 until outHeight) {
-            val sy = sampleTop + (dy * sampleHeight / outHeight)
             for (dx in 0 until outWidth) {
-                val sx = sampleLeft + (dx * sampleWidth / outWidth)
+                val normalizedX = ((dx + 0.5f) / outWidth) * 2f - 1f
+                val normalizedY = ((dy + 0.5f) / outHeight) * 2f - 1f
+                val radiusSquared = normalizedX * normalizedX + normalizedY * normalizedY
+                val radial = if (fishEyeStrength > 0f) {
+                    (1f + fishEyeStrength * radiusSquared) / (1f + fishEyeStrength)
+                } else 1f
+                val sourceX = normalizedX * radial
+                val sourceY = normalizedY * radial
+                val at = (dy * outWidth + dx) * 4
+                if (sourceX !in -1f..1f || sourceY !in -1f..1f) {
+                    output[at] = 0
+                    output[at + 1] = 0
+                    output[at + 2] = 0
+                    output[at + 3] = 0xff.toByte()
+                    continue
+                }
+                val sx = (sampleLeft + (sourceX + 1f) * 0.5f * (sampleWidth - 1))
+                    .roundToInt().coerceIn(sampleLeft, sampleLeft + sampleWidth - 1)
+                val sy = (sampleTop + (sourceY + 1f) * 0.5f * (sampleHeight - 1))
+                    .roundToInt().coerceIn(sampleTop, sampleTop + sampleHeight - 1)
                 val y = sample(planes[0], sx, sy)
                 val u = sample(planes[1], sx / 2, sy / 2) - 128
                 val v = sample(planes[2], sx / 2, sy / 2) - 128
                 val r = (y + 1.402f * v).roundToInt().coerceIn(0, 255)
                 val g = (y - 0.344136f * u - 0.714136f * v).roundToInt().coerceIn(0, 255)
                 val b = (y + 1.772f * u).roundToInt().coerceIn(0, 255)
-                val at = (dy * outWidth + dx) * 4
                 output[at] = r.toByte(); output[at + 1] = g.toByte()
                 output[at + 2] = b.toByte(); output[at + 3] = 0xff.toByte()
             }
         }
         return output
+    }
+
+    private fun applyVisualEffects(
+        rgba: ByteArray,
+        width: Int,
+        height: Int,
+        timeUs: Long,
+        settings: VisualSettings
+    ) {
+        if (settings.colorEnabled) applyColorCorrection(rgba, settings)
+        if (settings.overlayEnabled) {
+            val instant = settings.overlayStartEpochMs + timeUs / 1_000L
+            val text = SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", Locale.US).format(Date(instant))
+            drawTimestamp(rgba, width, height, text)
+        }
+    }
+
+    private fun applyColorCorrection(rgba: ByteArray, settings: VisualSettings) {
+        val temperature = settings.temperature.coerceIn(-1f, 1f)
+        val tint = settings.tint.coerceIn(-1f, 1f)
+        val saturation = settings.saturation.coerceIn(0f, 2f)
+        val contrast = settings.contrast.coerceIn(0.5f, 1.5f)
+        val brightness = settings.brightness.coerceIn(-0.5f, 0.5f) * 255f
+        var index = 0
+        while (index < rgba.size) {
+            var red = (rgba[index].toInt() and 255).toFloat()
+            var green = (rgba[index + 1].toInt() and 255).toFloat()
+            var blue = (rgba[index + 2].toInt() and 255).toFloat()
+
+            red += temperature * 28f - tint * 7f
+            green += tint * 18f
+            blue -= temperature * 28f + tint * 7f
+            val luma = 0.299f * red + 0.587f * green + 0.114f * blue
+            red = luma + (red - luma) * saturation
+            green = luma + (green - luma) * saturation
+            blue = luma + (blue - luma) * saturation
+            red = (red - 127.5f) * contrast + 127.5f + brightness
+            green = (green - 127.5f) * contrast + 127.5f + brightness
+            blue = (blue - 127.5f) * contrast + 127.5f + brightness
+
+            rgba[index] = red.roundToInt().coerceIn(0, 255).toByte()
+            rgba[index + 1] = green.roundToInt().coerceIn(0, 255).toByte()
+            rgba[index + 2] = blue.roundToInt().coerceIn(0, 255).toByte()
+            index += 4
+        }
+    }
+
+    private fun drawTimestamp(
+        rgba: ByteArray,
+        width: Int,
+        height: Int,
+        text: String
+    ) {
+        val scale = if (width >= 700) 3 else 2
+        val characterWidth = 6 * scale
+        val textWidth = text.length * characterWidth
+        val startX = (width - textWidth - 18).coerceAtLeast(4)
+        val startY = (height - 7 * scale - 18).coerceAtLeast(4)
+        drawPixelText(rgba, width, height, text, startX + 2, startY + 2, scale, 0, 0, 0)
+        drawPixelText(rgba, width, height, text, startX, startY, scale, 245, 238, 205)
+    }
+
+    private fun drawPixelText(
+        rgba: ByteArray,
+        width: Int,
+        height: Int,
+        text: String,
+        startX: Int,
+        startY: Int,
+        scale: Int,
+        red: Int,
+        green: Int,
+        blue: Int
+    ) {
+        text.forEachIndexed { characterIndex, character ->
+            val rows = glyph(character)
+            for (row in rows.indices) {
+                for (column in 0 until 5) {
+                    if (rows[row] and (1 shl (4 - column)) == 0) continue
+                    val left = startX + characterIndex * 6 * scale + column * scale
+                    val top = startY + row * scale
+                    for (py in top until top + scale) for (px in left until left + scale) {
+                        if (px !in 0 until width || py !in 0 until height) continue
+                        val at = (py * width + px) * 4
+                        rgba[at] = red.toByte()
+                        rgba[at + 1] = green.toByte()
+                        rgba[at + 2] = blue.toByte()
+                        rgba[at + 3] = 0xff.toByte()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun glyph(character: Char): IntArray = when (character) {
+        '0' -> intArrayOf(14, 17, 19, 21, 25, 17, 14)
+        '1' -> intArrayOf(4, 12, 4, 4, 4, 4, 14)
+        '2' -> intArrayOf(14, 17, 1, 2, 4, 8, 31)
+        '3' -> intArrayOf(30, 1, 1, 14, 1, 1, 30)
+        '4' -> intArrayOf(2, 6, 10, 18, 31, 2, 2)
+        '5' -> intArrayOf(31, 16, 16, 30, 1, 1, 30)
+        '6' -> intArrayOf(14, 16, 16, 30, 17, 17, 14)
+        '7' -> intArrayOf(31, 1, 2, 4, 8, 8, 8)
+        '8' -> intArrayOf(14, 17, 17, 14, 17, 17, 14)
+        '9' -> intArrayOf(14, 17, 17, 15, 1, 1, 14)
+        '/' -> intArrayOf(1, 2, 2, 4, 8, 8, 16)
+        ':' -> intArrayOf(0, 4, 4, 0, 4, 4, 0)
+        '-' -> intArrayOf(0, 0, 0, 31, 0, 0, 0)
+        else -> intArrayOf(0, 0, 0, 0, 0, 0, 0)
     }
 
     private fun sample(plane: Image.Plane, x: Int, y: Int): Int {
