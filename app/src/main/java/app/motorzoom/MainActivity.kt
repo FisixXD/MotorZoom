@@ -222,12 +222,29 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
                 .build()
-            val videoBuilder = VideoCapture.Builder(recorder)
-            Camera2Interop.Extender(videoBuilder).setCaptureRequestOption(
-                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                if (vhsMotion60) Range(60, 60) else Range(30, 30)
-            )
-            videoCapture = videoBuilder.build()
+            // O caminho normal não força Camera2: alguns firmwares Samsung
+            // encerram a sessão ao receber até mesmo Range(30, 30).
+            videoCapture = if (vhsMotion60) {
+                try {
+                    val videoBuilder = VideoCapture.Builder(recorder)
+                    Camera2Interop.Extender(videoBuilder).setCaptureRequestOption(
+                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                        Range(60, 60)
+                    )
+                    videoBuilder.build()
+                } catch (_: Throwable) {
+                    vhsMotion60 = false
+                    binding.vhsMotionSwitch.isChecked = false
+                    Toast.makeText(
+                        this,
+                        "60 campos não foi aceito; usando 480p30",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    VideoCapture.withOutput(recorder)
+                }
+            } else {
+                VideoCapture.withOutput(recorder)
+            }
 
             try {
                 provider.unbindAll()
