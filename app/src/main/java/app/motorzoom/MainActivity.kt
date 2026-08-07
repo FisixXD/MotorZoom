@@ -7,8 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.hardware.camera2.CaptureRequest
-import android.util.Range
 import android.util.Rational
 import android.view.MotionEvent
 import android.view.View
@@ -23,8 +21,6 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
-import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.FallbackStrategy
@@ -43,7 +39,6 @@ import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
-@OptIn(ExperimentalCamera2Interop::class)
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
@@ -59,8 +54,6 @@ class MainActivity : AppCompatActivity() {
     private var zoomDirection = 0
     private var zoomUnitsPerSecond = 0.35f
     private var lastZoomFrameNanos = 0L
-    private var lastCameraUpdateNanos = 0L
-    private var vhsMotion60 = false
     private var presetJson = ""
     private var presetName = "Padrão"
 
@@ -98,11 +91,7 @@ class MainActivity : AppCompatActivity() {
                 .coerceIn(minZoom, maxZoom)
             binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
 
-            // 30 Hz reduz a carga durante a gravação sem os degraus visíveis de 20 Hz.
-            if (frameTimeNanos - lastCameraUpdateNanos >= 33_000_000L) {
-                submitZoom(currentZoom)
-                lastCameraUpdateNanos = frameTimeNanos
-            }
+            submitZoom(currentZoom)
 
             if ((currentZoom <= minZoom && zoomDirection < 0) ||
                 (currentZoom >= maxZoom && zoomDirection > 0)) {
@@ -147,20 +136,6 @@ class MainActivity : AppCompatActivity() {
         binding.recordButton.setOnClickListener { toggleRecording() }
         binding.photoButton.setOnClickListener { takePhoto() }
         binding.ntscButton.setOnClickListener { showProcessorMenu() }
-        binding.vhsMotionSwitch.setOnCheckedChangeListener { _, checked ->
-            if (recording != null) {
-                binding.vhsMotionSwitch.isChecked = vhsMotion60
-                Toast.makeText(this, "Pare a gravação antes de mudar o modo", Toast.LENGTH_SHORT).show()
-            } else {
-                vhsMotion60 = checked
-                startCamera()
-                Toast.makeText(
-                    this,
-                    if (checked) "Movimento VHS: 480p60" else "Modo estável: 480p30",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
     }
 
     private fun installRocker(view: View, direction: Int) {
@@ -217,34 +192,12 @@ class MainActivity : AppCompatActivity() {
             val recorder = Recorder.Builder()
                 .setQualitySelector(
                     QualitySelector.fromOrderedList(
-                        listOf(Quality.SD),
-                        FallbackStrategy.higherQualityOrLowerThan(Quality.SD)
+                        listOf(Quality.FHD, Quality.HD),
+                        FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)
                     )
                 )
                 .build()
-            // O caminho normal não força Camera2: alguns firmwares Samsung
-            // encerram a sessão ao receber até mesmo Range(30, 30).
-            videoCapture = if (vhsMotion60) {
-                try {
-                    val videoBuilder = VideoCapture.Builder(recorder)
-                    Camera2Interop.Extender(videoBuilder).setCaptureRequestOption(
-                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                        Range(60, 60)
-                    )
-                    videoBuilder.build()
-                } catch (_: Throwable) {
-                    vhsMotion60 = false
-                    binding.vhsMotionSwitch.isChecked = false
-                    Toast.makeText(
-                        this,
-                        "60 campos não foi aceito; usando 480p30",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    VideoCapture.withOutput(recorder)
-                }
-            } else {
-                VideoCapture.withOutput(recorder)
-            }
+            videoCapture = VideoCapture.withOutput(recorder)
 
             try {
                 provider.unbindAll()

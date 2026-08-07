@@ -67,9 +67,6 @@ NTSC-RS pós-gravação totalmente offline.
 - O resultado é gerado em 640×480 em `Movies/MotorZoom`, sem alterar o original.
 - A faixa de áudio original é copiada sem recompressão para preservar a qualidade.
 - Nesta versão, o processador é destinado aos vídeos 4:3 horizontais gravados pelo app.
-- O modo estável grava em 480p30. **Movimento VHS** solicita 480p60 e, no
-  processamento, converte os quadros em campos alternados reconstruídos numa
-  saída 60p compatível com telas modernas.
 
 ## Compilar
 
