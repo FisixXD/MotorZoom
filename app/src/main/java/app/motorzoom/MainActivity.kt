@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Range
 import android.util.Rational
 import android.view.MotionEvent
 import android.view.View
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var presetJson = ""
     private var presetName = "Padrão"
     private var vhsFieldsEnabled = false
+    private var vhs60Mode = false
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) startNtscProcessing(uri)
@@ -137,6 +139,16 @@ class MainActivity : AppCompatActivity() {
         binding.recordButton.setOnClickListener { toggleRecording() }
         binding.photoButton.setOnClickListener { takePhoto() }
         binding.ntscButton.setOnClickListener { showProcessorMenu() }
+        binding.modeButton.setOnClickListener {
+            if (recording != null) {
+                Toast.makeText(this, "Pare a gravação antes de mudar o modo", Toast.LENGTH_SHORT).show()
+            } else {
+                vhs60Mode = !vhs60Mode
+                if (vhs60Mode) vhsFieldsEnabled = true
+                updateModeUi()
+                startCamera()
+            }
+        }
     }
 
     private fun installRocker(view: View, direction: Int) {
@@ -181,37 +193,43 @@ class MainActivity : AppCompatActivity() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             val provider = providerFuture.get()
-            val preview = Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                .build().also {
+            val previewBuilder = Preview.Builder().setTargetAspectRatio(
+                if (vhs60Mode) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
+            )
+            if (vhs60Mode) previewBuilder.setTargetFrameRate(Range(60, 60))
+            val preview = previewBuilder.build().also {
                 it.surfaceProvider = binding.previewView.surfaceProvider
             }
-            imageCapture = ImageCapture.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .build()
+            imageCapture = if (vhs60Mode) null else {
+                ImageCapture.Builder()
+                    .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .build()
+            }
             val recorder = Recorder.Builder()
                 .setQualitySelector(
                     QualitySelector.fromOrderedList(
-                        listOf(Quality.FHD, Quality.HD),
+                        if (vhs60Mode) listOf(Quality.FHD) else listOf(Quality.FHD, Quality.HD),
                         FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)
                     )
                 )
                 .build()
-            videoCapture = VideoCapture.withOutput(recorder)
+            val videoBuilder = VideoCapture.Builder(recorder)
+            if (vhs60Mode) videoBuilder.setTargetFrameRate(Range(60, 60))
+            videoCapture = videoBuilder.build()
 
             try {
                 provider.unbindAll()
                 val viewPort = ViewPort.Builder(
-                    Rational(4, 3),
+                    if (vhs60Mode) Rational(16, 9) else Rational(4, 3),
                     binding.previewView.display.rotation
                 ).setScaleType(ViewPort.FILL_CENTER).build()
-                val useCases = UseCaseGroup.Builder()
+                val useCaseBuilder = UseCaseGroup.Builder()
                     .addUseCase(preview)
                     .addUseCase(videoCapture!!)
-                    .addUseCase(imageCapture!!)
                     .setViewPort(viewPort)
-                    .build()
+                imageCapture?.let { useCaseBuilder.addUseCase(it) }
+                val useCases = useCaseBuilder.build()
                 camera = provider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
@@ -227,9 +245,25 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (error: Exception) {
-                Toast.makeText(this, "Não foi possível abrir a câmera: ${error.message}", Toast.LENGTH_LONG).show()
+                if (vhs60Mode) {
+                    vhs60Mode = false
+                    updateModeUi()
+                    Toast.makeText(
+                        this,
+                        "VHS 60 não foi aceito; voltando ao modo 4:3 30",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    binding.root.post { startCamera() }
+                } else {
+                    Toast.makeText(this, "Não foi possível abrir a câmera: ${error.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun updateModeUi() {
+        binding.modeButton.text = if (vhs60Mode) "MODO: VHS 60 (16:9)" else "MODO: 4:3 30"
+        binding.photoButton.isEnabled = !vhs60Mode
     }
 
     private fun toggleRecording() {
