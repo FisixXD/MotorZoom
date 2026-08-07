@@ -3,13 +3,11 @@ package app.motorzoom
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
-import android.hardware.camera2.CaptureRequest
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.util.Range
 import android.util.Rational
 import android.view.MotionEvent
 import android.view.View
@@ -24,8 +22,6 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
-import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.FallbackStrategy
@@ -41,10 +37,10 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-@OptIn(ExperimentalCamera2Interop::class)
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
@@ -53,16 +49,20 @@ class MainActivity : AppCompatActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var imageCapture: ImageCapture? = null
     private var recording: Recording? = null
+    private var vhs60Camera: Vhs60Camera? = null
 
     private var currentZoom = 1f
     private var minZoom = 1f
     private var maxZoom = 4f
     private var zoomDirection = 0
     private var zoomUnitsPerSecond = 0.35f
-    private var lastZoomFrameNanos = 0L
+    private var zoomStartNanos = 0L
+    private var zoomStartRatio = 1f
+    private var lastZoomSubmitNanos = 0L
+    private var zoomRequestInFlight = false
+    private var latestZoomRequest = 1f
     private var presetJson = ""
     private var presetName = "Padrão"
-    private var vhsFieldsEnabled = false
     private var vhs60Mode = false
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -87,19 +87,25 @@ class MainActivity : AppCompatActivity() {
     private val zoomFrame = object : android.view.Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (zoomDirection == 0) {
-                lastZoomFrameNanos = 0L
+                zoomStartNanos = 0L
                 return
             }
 
-            if (lastZoomFrameNanos == 0L) lastZoomFrameNanos = frameTimeNanos
-            val elapsedSeconds = (frameTimeNanos - lastZoomFrameNanos) / 1_000_000_000f
-            lastZoomFrameNanos = frameTimeNanos
-
-            currentZoom = (currentZoom + zoomDirection * zoomUnitsPerSecond * elapsedSeconds)
+            if (zoomStartNanos == 0L) {
+                zoomStartNanos = frameTimeNanos
+                zoomStartRatio = currentZoom
+            }
+            val elapsedSeconds = (frameTimeNanos - zoomStartNanos) / 1_000_000_000f
+            currentZoom = (zoomStartRatio + zoomDirection * zoomUnitsPerSecond * elapsedSeconds)
                 .coerceIn(minZoom, maxZoom)
             binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
 
-            submitZoom(currentZoom)
+            // Camera commands are asynchronous. Coalescing them prevents a backlog
+            // when video encoding briefly occupies the camera service.
+            if (frameTimeNanos - lastZoomSubmitNanos >= 33_333_333L) {
+                lastZoomSubmitNanos = frameTimeNanos
+                submitZoom(currentZoom)
+            }
 
             if ((currentZoom <= minZoom && zoomDirection < 0) ||
                 (currentZoom >= maxZoom && zoomDirection > 0)) {
@@ -127,6 +133,33 @@ class MainActivity : AppCompatActivity() {
         hideSystemUi()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        vhs60Camera = Vhs60Camera(this, binding.vhs60Preview, object : Vhs60Camera.Listener {
+            override fun onReady(minimum: Float, maximum: Float, fpsRange: android.util.Range<Int>) {
+                minZoom = minimum
+                maxZoom = maximum
+                currentZoom = currentZoom.coerceIn(minZoom, maxZoom)
+                Toast.makeText(
+                    this@MainActivity,
+                    "VHS60 pronto • câmera ${fpsRange.lower}-${fpsRange.upper} fps",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+            override fun onRecordingStarted() {
+                binding.recordButton.text = getString(R.string.stop)
+            }
+
+            override fun onRecordingFinished(uri: Uri, measuredFps: Float?) {
+                binding.recordButton.text = getString(R.string.record)
+                val measured = measuredFps?.let { String.format(Locale.US, "%.1f", it) } ?: "?"
+                Toast.makeText(this@MainActivity, "Vídeo salvo • $measured fps", Toast.LENGTH_LONG).show()
+            }
+
+            override fun onError(message: String) {
+                binding.recordButton.text = getString(R.string.record)
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+            }
+        })
         setupControls()
 
         if (hasCameraPermission()) startCamera() else requestPermissions()
@@ -145,11 +178,10 @@ class MainActivity : AppCompatActivity() {
         binding.photoButton.setOnClickListener { takePhoto() }
         binding.ntscButton.setOnClickListener { showProcessorMenu() }
         binding.modeButton.setOnClickListener {
-            if (recording != null) {
+            if (recording != null || vhs60Camera?.isBusy == true) {
                 Toast.makeText(this, "Pare a gravação antes de mudar o modo", Toast.LENGTH_SHORT).show()
             } else {
                 vhs60Mode = !vhs60Mode
-                if (vhs60Mode) vhsFieldsEnabled = true
                 updateModeUi()
                 startCamera()
             }
@@ -178,74 +210,82 @@ class MainActivity : AppCompatActivity() {
     private fun startZoom(direction: Int) {
         if (zoomDirection == direction) return
         zoomDirection = direction
-        lastZoomFrameNanos = 0L
+        zoomStartNanos = 0L
+        lastZoomSubmitNanos = 0L
         android.view.Choreographer.getInstance().removeFrameCallback(zoomFrame)
         android.view.Choreographer.getInstance().postFrameCallback(zoomFrame)
     }
 
     private fun stopZoom() {
         zoomDirection = 0
-        lastZoomFrameNanos = 0L
+        zoomStartNanos = 0L
         android.view.Choreographer.getInstance().removeFrameCallback(zoomFrame)
         submitZoom(currentZoom)
     }
 
     private fun submitZoom(value: Float) {
-        camera?.cameraControl?.setZoomRatio(value)
+        latestZoomRequest = value
+        if (vhs60Mode) {
+            vhs60Camera?.setZoomRatio(value)
+            return
+        }
+        dispatchCameraXZoom()
+    }
+
+    private fun dispatchCameraXZoom() {
+        val control = camera?.cameraControl ?: return
+        if (zoomRequestInFlight) return
+        val submitted = latestZoomRequest
+        zoomRequestInFlight = true
+        val request = control.setZoomRatio(submitted)
+        request.addListener({
+            zoomRequestInFlight = false
+            if (abs(latestZoomRequest - submitted) >= 0.002f) dispatchCameraXZoom()
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun startCamera() {
+        if (vhs60Mode) {
+            startVhs60Camera()
+            return
+        }
+        vhs60Camera?.stop()
+        binding.vhs60Preview.visibility = View.GONE
+        binding.previewView.visibility = View.VISIBLE
+
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             val provider = providerFuture.get()
-            val previewBuilder = Preview.Builder().setTargetAspectRatio(
-                if (vhs60Mode) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
-            )
-            if (vhs60Mode) {
-                previewBuilder.setTargetFrameRate(Range(60, 60))
-                Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    Range(60, 60)
-                )
-            }
-            val preview = previewBuilder.build().also {
+            val preview = Preview.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .build().also {
                 it.surfaceProvider = binding.previewView.surfaceProvider
             }
-            imageCapture = if (vhs60Mode) null else {
-                ImageCapture.Builder()
-                    .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                    .build()
-            }
+            imageCapture = ImageCapture.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .build()
             val recorder = Recorder.Builder()
                 .setQualitySelector(
                     QualitySelector.fromOrderedList(
-                        if (vhs60Mode) listOf(Quality.FHD) else listOf(Quality.FHD, Quality.HD),
+                        listOf(Quality.FHD, Quality.HD),
                         FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)
                     )
                 )
                 .build()
-            val videoBuilder = VideoCapture.Builder(recorder)
-            if (vhs60Mode) {
-                videoBuilder.setTargetFrameRate(Range(60, 60))
-                Camera2Interop.Extender(videoBuilder).setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    Range(60, 60)
-                )
-            }
-            videoCapture = videoBuilder.build()
+            videoCapture = VideoCapture.Builder(recorder).build()
 
             try {
                 provider.unbindAll()
                 val viewPort = ViewPort.Builder(
-                    if (vhs60Mode) Rational(16, 9) else Rational(4, 3),
+                    Rational(4, 3),
                     binding.previewView.display.rotation
                 ).setScaleType(ViewPort.FILL_CENTER).build()
                 val useCaseBuilder = UseCaseGroup.Builder()
                     .addUseCase(preview)
                     .addUseCase(videoCapture!!)
                     .setViewPort(viewPort)
-                imageCapture?.let { useCaseBuilder.addUseCase(it) }
+                useCaseBuilder.addUseCase(imageCapture!!)
                 val useCases = useCaseBuilder.build()
                 camera = provider.bindToLifecycle(
                     this,
@@ -258,23 +298,26 @@ class MainActivity : AppCompatActivity() {
                     maxZoom = min(4f, state.maxZoomRatio)
                     if (zoomDirection == 0) {
                         currentZoom = state.zoomRatio.coerceIn(minZoom, maxZoom)
+                        latestZoomRequest = currentZoom
                         binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
                     }
                 }
             } catch (error: Exception) {
-                if (vhs60Mode) {
-                    vhs60Mode = false
-                    updateModeUi()
-                    Toast.makeText(
-                        this,
-                        "VHS 60 não foi aceito; voltando ao modo 4:3 30",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    binding.root.post { startCamera() }
-                } else {
-                    Toast.makeText(this, "Não foi possível abrir a câmera: ${error.message}", Toast.LENGTH_LONG).show()
-                }
+                Toast.makeText(this, "Não foi possível abrir a câmera: ${error.message}", Toast.LENGTH_LONG).show()
             }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun startVhs60Camera() {
+        ProcessCameraProvider.getInstance(this).addListener({
+            ProcessCameraProvider.getInstance(this).get().unbindAll()
+            camera = null
+            videoCapture = null
+            imageCapture = null
+            zoomRequestInFlight = false
+            binding.previewView.visibility = View.GONE
+            binding.vhs60Preview.visibility = View.VISIBLE
+            vhs60Camera?.start()
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -284,6 +327,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleRecording() {
+        if (vhs60Mode) {
+            if (vhs60Camera?.isRecording == true) vhs60Camera?.stopRecording()
+            else vhs60Camera?.startRecording()
+            return
+        }
+
         val activeRecording = recording
         if (activeRecording != null) {
             activeRecording.stop()
@@ -385,12 +434,7 @@ class MainActivity : AppCompatActivity() {
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS • $presetName")
-            .setMultiChoiceItems(
-                arrayOf("Movimento VHS para vídeos 50/60 fps"),
-                booleanArrayOf(vhsFieldsEnabled)
-            ) { _, _, checked ->
-                vhsFieldsEnabled = checked
-            }
+            .setMessage("Os campos e o entrelaçamento seguem o preset do NTSC-RS.")
             .setPositiveButton("Escolher vídeo") { _, _ -> videoPicker.launch(arrayOf("video/*")) }
             .setNeutralButton("Importar preset") { _, _ ->
                 presetPicker.launch(arrayOf("application/json", "text/plain"))
@@ -406,8 +450,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 NtscVideoProcessor(contentResolver).process(
                     uri,
-                    presetJson,
-                    vhsFieldsEnabled
+                    presetJson
                 ) { percent ->
                     runOnUiThread { binding.ntscButton.text = "$percent%" }
                 }
@@ -443,6 +486,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         stopZoom()
         recording?.stop()
+        vhs60Camera?.stop()
         cameraExecutor.shutdown()
         super.onDestroy()
     }
