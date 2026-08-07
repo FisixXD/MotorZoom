@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
@@ -56,6 +57,7 @@ class Vhs60Camera(
     private var characteristics: CameraCharacteristics? = null
     private var previewSize = Size(1920, 1080)
     private var fpsRange = Range(60, 60)
+    private var useHighSpeedSession = false
     private var zoomRatio = 1f
     private var opening = false
     private var startingRecording = false
@@ -113,7 +115,7 @@ class Vhs60Camera(
             val builder = requestBuilder ?: return@post
             applyCameraOptions(builder)
             try {
-                session?.setRepeatingRequest(builder.build(), null, cameraHandler)
+                submitRepeating(builder)
             } catch (_: Exception) {
                 // A session can be changing between preview and recording here.
             }
@@ -163,12 +165,7 @@ class Vhs60Camera(
         if (ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         try {
             opening = true
-            cameraId = manager.cameraIdList.first { id ->
-                manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                    CameraCharacteristics.LENS_FACING_BACK
-            }
-            characteristics = manager.getCameraCharacteristics(cameraId)
-            chooseConfiguration(characteristics!!)
+            chooseCameraConfiguration()
             manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
                     opening = false
@@ -202,19 +199,75 @@ class Vhs60Camera(
         }
     }
 
-    private fun chooseConfiguration(info: CameraCharacteristics) {
-        val map = info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: error("A câmera não informou resoluções")
-        val sizes = map.getOutputSizes(MediaRecorder::class.java).orEmpty()
-            .filter { it.width * 9 == it.height * 16 }
-        previewSize = sizes.firstOrNull { it.width == 1920 && it.height == 1080 }
-            ?: sizes.firstOrNull { it.width == 1280 && it.height == 720 }
-            ?: sizes.maxByOrNull { it.width.toLong() * it.height } ?: error("Sem resolução 16:9")
+    private data class CameraConfiguration(
+        val id: String,
+        val info: CameraCharacteristics,
+        val size: Size,
+        val range: Range<Int>,
+        val highSpeed: Boolean
+    )
 
-        val ranges = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
-            .filter { it.upper >= 60 && it.lower <= 60 }
-        fpsRange = ranges.firstOrNull { it.lower == 60 && it.upper == 60 }
-            ?: ranges.maxByOrNull { it.lower } ?: error("A câmera traseira não anuncia 60 fps")
+    /**
+     * Samsung can expose 60 fps either as a regular AE range or only through
+     * Camera2's constrained high-speed table. Inspect every rear camera instead
+     * of assuming the first ID is the main sensor.
+     */
+    private fun chooseCameraConfiguration() {
+        val regular = mutableListOf<CameraConfiguration>()
+        val highSpeed = mutableListOf<CameraConfiguration>()
+
+        manager.cameraIdList.forEach { id ->
+            val info = manager.getCameraCharacteristics(id)
+            if (info.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) {
+                return@forEach
+            }
+            val map = info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return@forEach
+            val recorderSizes = map.getOutputSizes(MediaRecorder::class.java).orEmpty()
+                .filter { it.width * 9 == it.height * 16 }
+            val regularRange = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                .orEmpty()
+                .filter { it.lower <= 60 && it.upper >= 60 }
+                .sortedWith(compareByDescending<Range<Int>> { it.lower }.thenBy { it.upper })
+                .firstOrNull()
+            val regularSize = preferredSize(recorderSizes)
+            if (regularRange != null && regularSize != null) {
+                regular += CameraConfiguration(id, info, regularSize, regularRange, false)
+            }
+
+            try {
+                map.highSpeedVideoSizes.orEmpty().forEach { size ->
+                    val range = map.getHighSpeedVideoFpsRangesFor(size)
+                        .filter { it.lower <= 60 && it.upper >= 60 }
+                        .sortedWith(compareByDescending<Range<Int>> { it.lower }.thenBy { it.upper })
+                        .firstOrNull()
+                    if (range != null && size.width * 9 == size.height * 16) {
+                        highSpeed += CameraConfiguration(id, info, size, range, true)
+                    }
+                }
+            } catch (_: Exception) {
+                // This camera ID does not implement constrained high-speed video.
+            }
+        }
+
+        val chosen = regular.maxByOrNull { sizeScore(it.size) }
+            ?: highSpeed.maxByOrNull { sizeScore(it.size) }
+            ?: error("a API pública do aparelho não expõe 60 fps")
+        cameraId = chosen.id
+        characteristics = chosen.info
+        previewSize = chosen.size
+        fpsRange = chosen.range
+        useHighSpeedSession = chosen.highSpeed
+    }
+
+    private fun preferredSize(sizes: List<Size>): Size? =
+        sizes.firstOrNull { it.width == 1920 && it.height == 1080 }
+            ?: sizes.firstOrNull { it.width == 1280 && it.height == 720 }
+            ?: sizes.maxByOrNull { sizeScore(it) }
+
+    private fun sizeScore(size: Size): Long {
+        val cappedWidth = min(size.width, 1920)
+        val cappedHeight = min(size.height, 1080)
+        return cappedWidth.toLong() * cappedHeight
     }
 
     private fun startPreview() {
@@ -233,7 +286,7 @@ class Vhs60Camera(
 
         session?.close()
         session = null
-        device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
+        val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(newSession: CameraCaptureSession) {
                 session = newSession
                 val template = if (recording) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW
@@ -244,7 +297,7 @@ class Vhs60Camera(
                 requestBuilder = builder
                 applyCameraOptions(builder)
                 try {
-                    newSession.setRepeatingRequest(builder.build(), null, cameraHandler)
+                    submitRepeating(builder)
                     if (recording) {
                         recorder?.start()
                         startingRecording = false
@@ -263,7 +316,23 @@ class Vhs60Camera(
                 if (recording) closeOutput(delete = true)
                 postError("O A06 recusou a combinação de preview e gravação a 60 fps")
             }
-        }, cameraHandler)
+        }
+        if (useHighSpeedSession) {
+            device.createConstrainedHighSpeedCaptureSession(surfaces, callback, cameraHandler)
+        } else {
+            device.createCaptureSession(surfaces, callback, cameraHandler)
+        }
+    }
+
+    private fun submitRepeating(builder: CaptureRequest.Builder) {
+        val activeSession = session ?: return
+        if (useHighSpeedSession) {
+            val highSpeedSession = activeSession as CameraConstrainedHighSpeedCaptureSession
+            val burst = highSpeedSession.createHighSpeedRequestList(builder.build())
+            highSpeedSession.setRepeatingBurst(burst, null, cameraHandler)
+        } else {
+            activeSession.setRepeatingRequest(builder.build(), null, cameraHandler)
+        }
     }
 
     private fun applyCameraOptions(builder: CaptureRequest.Builder) {
