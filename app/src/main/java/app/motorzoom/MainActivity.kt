@@ -3,6 +3,8 @@ package app.motorzoom
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.hardware.camera2.CaptureRequest
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +24,8 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.FallbackStrategy
@@ -40,6 +44,7 @@ import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
+@OptIn(ExperimentalCamera2Interop::class)
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
@@ -196,7 +201,13 @@ class MainActivity : AppCompatActivity() {
             val previewBuilder = Preview.Builder().setTargetAspectRatio(
                 if (vhs60Mode) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
             )
-            if (vhs60Mode) previewBuilder.setTargetFrameRate(Range(60, 60))
+            if (vhs60Mode) {
+                previewBuilder.setTargetFrameRate(Range(60, 60))
+                Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    Range(60, 60)
+                )
+            }
             val preview = previewBuilder.build().also {
                 it.surfaceProvider = binding.previewView.surfaceProvider
             }
@@ -215,7 +226,13 @@ class MainActivity : AppCompatActivity() {
                 )
                 .build()
             val videoBuilder = VideoCapture.Builder(recorder)
-            if (vhs60Mode) videoBuilder.setTargetFrameRate(Range(60, 60))
+            if (vhs60Mode) {
+                videoBuilder.setTargetFrameRate(Range(60, 60))
+                Camera2Interop.Extender(videoBuilder).setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    Range(60, 60)
+                )
+            }
             videoCapture = videoBuilder.build()
 
             try {
@@ -304,10 +321,29 @@ class MainActivity : AppCompatActivity() {
                     if (event.hasError()) {
                         Toast.makeText(this, "Erro ao gravar: ${event.error}", Toast.LENGTH_LONG).show()
                     } else {
-                        Toast.makeText(this, "Vídeo salvo em Movies/MotorZoom", Toast.LENGTH_SHORT).show()
+                        val fps = readRecordedFps(event.outputResults.outputUri)
+                        val message = if (fps != null) {
+                            "Vídeo salvo • ${String.format(Locale.US, "%.1f", fps)} fps"
+                        } else {
+                            "Vídeo salvo em Movies/MotorZoom"
+                        }
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
                 }
             }
+        }
+    }
+
+    private fun readRecordedFps(uri: Uri): Float? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(this, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
+                ?.toFloatOrNull()
+        } catch (_: Exception) {
+            null
+        } finally {
+            retriever.release()
         }
     }
 
