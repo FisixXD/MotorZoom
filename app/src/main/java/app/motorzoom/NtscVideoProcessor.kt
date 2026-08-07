@@ -248,10 +248,20 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         val crop = image.cropRect
         val planes = image.planes
         val output = ByteArray(outWidth * outHeight * 4)
+        val targetRatio = outWidth.toFloat() / outHeight
+        val sourceRatio = crop.width().toFloat() / crop.height()
+        val sampleWidth = if (sourceRatio > targetRatio) {
+            (crop.height() * targetRatio).toInt()
+        } else crop.width()
+        val sampleHeight = if (sourceRatio < targetRatio) {
+            (crop.width() / targetRatio).toInt()
+        } else crop.height()
+        val sampleLeft = crop.left + (crop.width() - sampleWidth) / 2
+        val sampleTop = crop.top + (crop.height() - sampleHeight) / 2
         for (dy in 0 until outHeight) {
-            val sy = crop.top + (dy * crop.height() / outHeight)
+            val sy = sampleTop + (dy * sampleHeight / outHeight)
             for (dx in 0 until outWidth) {
-                val sx = crop.left + (dx * crop.width() / outWidth)
+                val sx = sampleLeft + (dx * sampleWidth / outWidth)
                 val y = sample(planes[0], sx, sy)
                 val u = sample(planes[1], sx / 2, sy / 2) - 128
                 val v = sample(planes[2], sx / 2, sy / 2) - 128
