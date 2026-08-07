@@ -3,6 +3,7 @@ package app.motorzoom
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.hardware.camera2.CaptureRequest
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -13,6 +14,7 @@ import android.util.Rational
 import android.view.MotionEvent
 import android.view.View
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -22,6 +24,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.AspectRatio
@@ -43,6 +48,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.slider.Slider
 import app.motorzoom.databinding.ActivityMainBinding
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -50,6 +56,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
+@ExperimentalCamera2Interop
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
@@ -58,6 +65,8 @@ class MainActivity : AppCompatActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var imageCapture: ImageCapture? = null
     private var recording: Recording? = null
+    private var directZoomControl: Camera2CameraControl? = null
+    private var directZoomRequestInFlight = false
 
     private var currentZoom = 1f
     private var minZoom = 1f
@@ -109,7 +118,7 @@ class MainActivity : AppCompatActivity() {
 
             // Camera commands are asynchronous. Coalescing them prevents a backlog
             // when video encoding briefly occupies the camera service.
-            if (frameTimeNanos - lastZoomSubmitNanos >= 33_333_333L) {
+            if (frameTimeNanos - lastZoomSubmitNanos >= 16_666_667L) {
                 lastZoomSubmitNanos = frameTimeNanos
                 submitZoom(currentZoom)
             }
@@ -203,7 +212,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun submitZoom(value: Float) {
         latestZoomRequest = value
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (directZoomControl != null) {
+                dispatchDirectZoom()
+                return
+            }
+        }
         dispatchCameraXZoom()
+    }
+
+    private fun dispatchDirectZoom() {
+        val direct = directZoomControl ?: return
+        if (directZoomRequestInFlight) return
+        val submitted = latestZoomRequest
+        directZoomRequestInFlight = true
+        val request = direct.setCaptureRequestOptions(
+            CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_ZOOM_RATIO, submitted)
+                .build()
+        )
+        request.addListener({
+            directZoomRequestInFlight = false
+            if (runCatching { request.get() }.isFailure) {
+                directZoomControl = null
+                dispatchCameraXZoom()
+                return@addListener
+            }
+            if (abs(latestZoomRequest - submitted) >= 0.001f) dispatchDirectZoom()
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun dispatchCameraXZoom() {
@@ -242,6 +278,8 @@ class MainActivity : AppCompatActivity() {
             videoCapture = VideoCapture.Builder(recorder).build()
 
             try {
+                directZoomControl = null
+                directZoomRequestInFlight = false
                 provider.unbindAll()
                 val viewPort = ViewPort.Builder(
                     Rational(4, 3),
@@ -258,11 +296,14 @@ class MainActivity : AppCompatActivity() {
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     useCases
                 )
+                directZoomControl = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Camera2CameraControl.from(camera!!.cameraControl)
+                } else null
 
                 camera?.cameraInfo?.zoomState?.observe(this) { state ->
                     minZoom = max(1f, state.minZoomRatio)
                     maxZoom = min(4f, state.maxZoomRatio)
-                    if (zoomDirection == 0) {
+                    if (zoomDirection == 0 && directZoomControl == null) {
                         currentZoom = state.zoomRatio.coerceIn(minZoom, maxZoom)
                         latestZoomRequest = currentZoom
                         binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
@@ -401,12 +442,6 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(info)
 
-        val enabled = CheckBox(this).apply {
-            text = "Aplicar zoom motorizado em pós"
-            isChecked = true
-        }
-        content.addView(enabled)
-
         val interlacedOutput = CheckBox(this).apply {
             text = "Saída NTSC 480i real (.mpg)"
             isChecked = true
@@ -415,6 +450,112 @@ class MainActivity : AppCompatActivity() {
         content.addView(TextView(this).apply {
             text = "Use um vídeo 59,94/60 fps. Cada campo usará um instante diferente, como numa filmadora NTSC."
         })
+
+        fun addSlider(
+            parent: LinearLayout,
+            title: String,
+            minimum: Float,
+            maximum: Float,
+            step: Float,
+            initial: Float,
+            valueText: (Float) -> String
+        ): Slider {
+            val label = TextView(this).apply { text = "$title: ${valueText(initial)}" }
+            parent.addView(label)
+            return Slider(this).also { slider ->
+                slider.valueFrom = minimum
+                slider.valueTo = maximum
+                slider.stepSize = step
+                slider.value = initial
+                slider.addOnChangeListener { _, value, _ ->
+                    label.text = "$title: ${valueText(value)}"
+                }
+                parent.addView(slider)
+            }
+        }
+
+        val colorEnabled = CheckBox(this).apply {
+            text = "Ajustar cores"
+            isChecked = false
+        }
+        content.addView(colorEnabled)
+        val colorPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(colorPanel)
+        val temperature = addSlider(colorPanel, "Temperatura", -100f, 100f, 1f, 0f) {
+            String.format(Locale.US, "%+.0f", it)
+        }
+        val saturation = addSlider(colorPanel, "Saturação", 0f, 2f, 0.05f, 1f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        val contrast = addSlider(colorPanel, "Contraste", 0.5f, 1.5f, 0.05f, 1f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        val brightness = addSlider(colorPanel, "Brilho", -0.5f, 0.5f, 0.05f, 0f) {
+            String.format(Locale.US, "%+.0f%%", it * 100f)
+        }
+        val tint = addSlider(colorPanel, "Matiz verde/magenta", -100f, 100f, 1f, 0f) {
+            String.format(Locale.US, "%+.0f", it)
+        }
+        colorPanel.addView(Button(this).apply {
+            text = "Restaurar cores"
+            setOnClickListener {
+                temperature.value = 0f
+                saturation.value = 1f
+                contrast.value = 1f
+                brightness.value = 0f
+                tint.value = 0f
+            }
+        })
+        colorEnabled.setOnCheckedChangeListener { _, checked ->
+            colorPanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val fishEyeEnabled = CheckBox(this).apply {
+            text = "Lente fish-eye"
+            isChecked = false
+        }
+        content.addView(fishEyeEnabled)
+        val fishEyePanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(fishEyePanel)
+        val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
+            fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val overlayEnabled = CheckBox(this).apply {
+            text = "Data e horário de filmadora VHS"
+            isChecked = false
+        }
+        content.addView(overlayEnabled)
+        val overlayPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(overlayPanel)
+        overlayPanel.addView(TextView(this).apply { text = "Data/hora inicial (DD/MM/AAAA HH:MM:SS)" })
+        val overlayDate = EditText(this).apply {
+            setText(SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date()))
+            inputType = InputType.TYPE_CLASS_DATETIME
+            setSelectAllOnFocus(true)
+        }
+        overlayPanel.addView(overlayDate)
+        overlayEnabled.setOnCheckedChangeListener { _, checked ->
+            overlayPanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val enabled = CheckBox(this).apply {
+            text = "Aplicar zoom motorizado em pós"
+            isChecked = true
+        }
+        content.addView(enabled)
 
         fun addNumberField(label: String, initial: String): EditText {
             content.addView(TextView(this).apply { text = label })
@@ -461,7 +602,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Zoom motorizado")
+            .setTitle("Processar vídeo")
             .setView(scroll)
             .setPositiveButton("Processar") { _, _ ->
                 val start = startField.text.toString().replace(',', '.').toFloatOrNull() ?: 0f
@@ -479,10 +620,35 @@ class MainActivity : AppCompatActivity() {
                     startZoom = if (zoomIn) 1f else maximum,
                     endZoom = if (zoomIn) maximum else 1f
                 )
-                startNtscProcessing(uri, settings, interlacedOutput.isChecked)
+                val dateParser = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).apply {
+                    isLenient = false
+                }
+                val overlayEpoch = runCatching { dateParser.parse(overlayDate.text.toString())!!.time }
+                    .getOrElse {
+                        Toast.makeText(this, "Data inválida; usando a data atual", Toast.LENGTH_LONG).show()
+                        System.currentTimeMillis()
+                    }
+                val visual = NtscVideoProcessor.VisualSettings(
+                    colorEnabled = colorEnabled.isChecked,
+                    temperature = temperature.value / 100f,
+                    saturation = saturation.value,
+                    contrast = contrast.value,
+                    brightness = brightness.value,
+                    tint = tint.value / 100f,
+                    fishEyeEnabled = fishEyeEnabled.isChecked,
+                    fishEyeStrength = fishEyeStrength.value,
+                    overlayEnabled = overlayEnabled.isChecked,
+                    overlayStartEpochMs = overlayEpoch
+                )
+                startNtscProcessing(uri, settings, visual, interlacedOutput.isChecked)
             }
             .setNeutralButton("Somente NTSC") { _, _ ->
-                startNtscProcessing(uri, NtscVideoProcessor.MotorZoomSettings(), interlacedOutput.isChecked)
+                startNtscProcessing(
+                    uri,
+                    NtscVideoProcessor.MotorZoomSettings(),
+                    NtscVideoProcessor.VisualSettings(),
+                    interlacedOutput.isChecked
+                )
             }
             .setNegativeButton("Cancelar", null)
             .show()
@@ -504,6 +670,7 @@ class MainActivity : AppCompatActivity() {
     private fun startNtscProcessing(
         uri: Uri,
         motorZoom: NtscVideoProcessor.MotorZoomSettings,
+        visual: NtscVideoProcessor.VisualSettings,
         trueInterlaced: Boolean
     ) {
         binding.ntscButton.isEnabled = false
@@ -514,6 +681,7 @@ class MainActivity : AppCompatActivity() {
                     uri,
                     presetJson,
                     motorZoom,
+                    visual,
                     trueInterlaced
                 ) { percent ->
                     runOnUiThread { binding.ntscButton.text = "$percent%" }
