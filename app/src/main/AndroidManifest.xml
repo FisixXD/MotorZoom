@@ -9,6 +9,7 @@
 
     <application
         android:allowBackup="true"
+        android:extractNativeLibs="true"
         android:label="Motor Zoom"
         android:theme="@style/Theme.MotorZoom">
         <activity
