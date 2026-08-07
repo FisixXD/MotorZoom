@@ -11,12 +11,19 @@ android {
         applicationId = "app.motorzoom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.9.0"
+        versionCode = 19
+        versionName = "0.10.0"
     }
 
     buildFeatures {
         viewBinding = true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libffmpeg.so"
+        }
     }
 
     compileOptions {
