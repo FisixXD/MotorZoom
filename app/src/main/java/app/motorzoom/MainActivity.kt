@@ -38,7 +38,6 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -55,9 +54,6 @@ class MainActivity : AppCompatActivity() {
     private var zoomDirection = 0
     private var zoomUnitsPerSecond = 0.35f
     private var lastZoomFrameNanos = 0L
-    private var lastCameraUpdateNanos = 0L
-    private var zoomRequestInFlight = false
-    private var queuedZoom = 1f
     private var presetJson = ""
     private var presetName = "Padrão"
 
@@ -95,12 +91,9 @@ class MainActivity : AppCompatActivity() {
                 .coerceIn(minZoom, maxZoom)
             binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
 
-            // Coalesce requests at 20 Hz. CameraX cancels overlapping zoom futures,
-            // which produces visible stalls on slower camera HALs such as the A06.
-            if (frameTimeNanos - lastCameraUpdateNanos >= 50_000_000L) {
-                submitZoom(currentZoom)
-                lastCameraUpdateNanos = frameTimeNanos
-            }
+            // Envia uma posição em cada quadro da interface. No Galaxy A06,
+            // limitar a 20 Hz deixa os degraus do zoom muito aparentes.
+            submitZoom(currentZoom)
 
             if ((currentZoom <= minZoom && zoomDirection < 0) ||
                 (currentZoom >= maxZoom && zoomDirection > 0)) {
@@ -182,16 +175,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun submitZoom(value: Float) {
-        queuedZoom = value
-        val activeCamera = camera ?: return
-        if (zoomRequestInFlight) return
-
-        val submitted = queuedZoom
-        zoomRequestInFlight = true
-        activeCamera.cameraControl.setZoomRatio(submitted).addListener({
-            zoomRequestInFlight = false
-            if (abs(queuedZoom - submitted) >= 0.005f) submitZoom(queuedZoom)
-        }, ContextCompat.getMainExecutor(this))
+        camera?.cameraControl?.setZoomRatio(value)
     }
 
     private fun startCamera() {

@@ -81,13 +81,22 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         progress: (Int) -> Unit
     ) {
         val decoder = MediaCodec.createDecoderByType(sourceMime)
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        val supportedColors = encoder.codecInfo
+            .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).colorFormats
+        val encoderColor = when {
+            supportedColors.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) ->
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+            supportedColors.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) ->
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+            else -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+        }
         val outputFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, encoderColor)
             setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
             setInteger(MediaFormat.KEY_FRAME_RATE, sourceFormat.getInteger(MediaFormat.KEY_FRAME_RATE, 30))
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
-        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         decoder.configure(sourceFormat, null, null, 0)
         encoder.configure(outputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         decoder.start()
@@ -131,7 +140,7 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
                             check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
                                 "Falha no núcleo NTSC-RS"
                             }
-                            queueEncoder(encoder, rgba, decoderInfo.presentationTimeUs)
+                            queueEncoder(encoder, rgba, decoderInfo.presentationTimeUs, encoderColor)
                             progress(((decoderInfo.presentationTimeUs * 100L) / durationUs.coerceAtLeast(1)).toInt().coerceIn(0, 99))
                         }
                         decoderDone = decoderInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
@@ -201,13 +210,13 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         }
     }
 
-    private fun queueEncoder(codec: MediaCodec, rgba: ByteArray, pts: Long) {
+    private fun queueEncoder(codec: MediaCodec, rgba: ByteArray, pts: Long, colorFormat: Int) {
         while (true) {
             val index = codec.dequeueInputBuffer(TIMEOUT_US)
             if (index >= 0) {
                 val output = codec.getInputBuffer(index)!!
                 output.clear()
-                rgbaToI420(rgba, output, WIDTH, HEIGHT)
+                rgbaToYuv420(rgba, output, WIDTH, HEIGHT, colorFormat)
                 codec.queueInputBuffer(index, 0, WIDTH * HEIGHT * 3 / 2, pts, 0)
                 return
             }
@@ -251,7 +260,13 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
         return plane.buffer.get(index).toInt() and 0xff
     }
 
-    private fun rgbaToI420(rgba: ByteArray, output: ByteBuffer, width: Int, height: Int) {
+    private fun rgbaToYuv420(
+        rgba: ByteArray,
+        output: ByteBuffer,
+        width: Int,
+        height: Int,
+        colorFormat: Int
+    ) {
         val frameSize = width * height
         for (y in 0 until height) for (x in 0 until width) {
             val i = (y * width + x) * 4
@@ -268,8 +283,15 @@ class NtscVideoProcessor(private val resolver: ContentResolver) {
             }
             r /= 4; g /= 4; b /= 4
             val chroma = (y / 2) * (width / 2) + x / 2
-            output.put(frameSize + chroma, (((-43 * r - 85 * g + 128 * b) shr 8) + 128).coerceIn(0, 255).toByte())
-            output.put(frameSize + frameSize / 4 + chroma, (((128 * r - 107 * g - 21 * b) shr 8) + 128).coerceIn(0, 255).toByte())
+            val u = (((-43 * r - 85 * g + 128 * b) shr 8) + 128).coerceIn(0, 255).toByte()
+            val v = (((128 * r - 107 * g - 21 * b) shr 8) + 128).coerceIn(0, 255).toByte()
+            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                output.put(frameSize + chroma * 2, u)
+                output.put(frameSize + chroma * 2 + 1, v)
+            } else {
+                output.put(frameSize + chroma, u)
+                output.put(frameSize + frameSize / 4 + chroma, v)
+            }
         }
     }
 }
