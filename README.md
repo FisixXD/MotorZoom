@@ -8,8 +8,8 @@ de filmadora e processamento NTSC-RS totalmente offline.
 - Segure **T** ou **W** para controlar o zoom motorizado.
 - Ajuste a velocidade entre `0,10×/s` e `1,50×/s`.
 - Grave vídeos e tire fotos em 4:3 com a câmera traseira.
-- No Android 11 ou superior, o rocker usa o controle Camera2 direto para reduzir
-  saltos durante a gravação; aparelhos incompatíveis usam o CameraX automaticamente.
+- O rocker envia continuamente a posição mais recente ao CameraX, sem aguardar
+  cada confirmação intermediária da câmera.
 
 ## Processamento offline
 
