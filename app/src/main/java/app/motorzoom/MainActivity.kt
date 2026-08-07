@@ -3,7 +3,6 @@ package app.motorzoom
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
-import android.hardware.camera2.CaptureRequest
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -24,9 +23,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.camera2.interop.Camera2CameraControl
-import androidx.camera.camera2.interop.CaptureRequestOptions
-import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.AspectRatio
@@ -56,7 +52,6 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-@ExperimentalCamera2Interop
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
@@ -65,8 +60,6 @@ class MainActivity : AppCompatActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var imageCapture: ImageCapture? = null
     private var recording: Recording? = null
-    private var directZoomControl: Camera2CameraControl? = null
-    private var directZoomRequestInFlight = false
 
     private var currentZoom = 1f
     private var minZoom = 1f
@@ -76,8 +69,8 @@ class MainActivity : AppCompatActivity() {
     private var zoomStartNanos = 0L
     private var zoomStartRatio = 1f
     private var lastZoomSubmitNanos = 0L
-    private var zoomRequestInFlight = false
     private var latestZoomRequest = 1f
+    private var lastAppliedZoom = 1f
     private var presetJson = ""
     private var presetName = "Padrão"
 
@@ -212,46 +205,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun submitZoom(value: Float) {
         latestZoomRequest = value
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (directZoomControl != null) {
-                dispatchDirectZoom()
-                return
-            }
-        }
-        dispatchCameraXZoom()
-    }
-
-    private fun dispatchDirectZoom() {
-        val direct = directZoomControl ?: return
-        if (directZoomRequestInFlight) return
-        val submitted = latestZoomRequest
-        directZoomRequestInFlight = true
-        val request = direct.setCaptureRequestOptions(
-            CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(CaptureRequest.CONTROL_ZOOM_RATIO, submitted)
-                .build()
-        )
-        request.addListener({
-            directZoomRequestInFlight = false
-            if (runCatching { request.get() }.isFailure) {
-                directZoomControl = null
-                dispatchCameraXZoom()
-                return@addListener
-            }
-            if (abs(latestZoomRequest - submitted) >= 0.001f) dispatchDirectZoom()
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun dispatchCameraXZoom() {
         val control = camera?.cameraControl ?: return
-        if (zoomRequestInFlight) return
-        val submitted = latestZoomRequest
-        zoomRequestInFlight = true
-        val request = control.setZoomRatio(submitted)
-        request.addListener({
-            zoomRequestInFlight = false
-            if (abs(latestZoomRequest - submitted) >= 0.002f) dispatchCameraXZoom()
-        }, ContextCompat.getMainExecutor(this))
+        if (abs(value - lastAppliedZoom) < 0.001f) return
+        lastAppliedZoom = value
+        // CameraX cancels an older pending zoom when a newer value arrives. Sending
+        // the current value continuously avoids waiting for a capture-result future,
+        // which made slow zooms visibly advance in large steps on the Galaxy A06.
+        control.setZoomRatio(value)
     }
 
     private fun startCamera() {
@@ -278,8 +238,6 @@ class MainActivity : AppCompatActivity() {
             videoCapture = VideoCapture.Builder(recorder).build()
 
             try {
-                directZoomControl = null
-                directZoomRequestInFlight = false
                 provider.unbindAll()
                 val viewPort = ViewPort.Builder(
                     Rational(4, 3),
@@ -296,16 +254,13 @@ class MainActivity : AppCompatActivity() {
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     useCases
                 )
-                directZoomControl = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Camera2CameraControl.from(camera!!.cameraControl)
-                } else null
-
                 camera?.cameraInfo?.zoomState?.observe(this) { state ->
                     minZoom = max(1f, state.minZoomRatio)
                     maxZoom = min(4f, state.maxZoomRatio)
-                    if (zoomDirection == 0 && directZoomControl == null) {
+                    if (zoomDirection == 0) {
                         currentZoom = state.zoomRatio.coerceIn(minZoom, maxZoom)
                         latestZoomRequest = currentZoom
+                        lastAppliedZoom = currentZoom
                         binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
                     }
                 }
@@ -696,7 +651,17 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.ntscButton.isEnabled = true
                     binding.ntscButton.text = getString(R.string.ntsc_rs)
-                    Toast.makeText(this, "Falha ao processar: ${error.message}", Toast.LENGTH_LONG).show()
+                    val message = "Falha ao processar:\n\n${error.message ?: error.javaClass.simpleName}"
+                    androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("Erro no processamento")
+                        .setMessage(message)
+                        .setPositiveButton("Fechar", null)
+                        .setNeutralButton("Copiar erro") { _, _ ->
+                            val clipboard = getSystemService(android.content.ClipboardManager::class.java)
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("MotorZoom", message))
+                            Toast.makeText(this, "Erro copiado", Toast.LENGTH_SHORT).show()
+                        }
+                        .show()
                 }
             }
         }
