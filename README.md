@@ -70,6 +70,8 @@ NTSC-RS pós-gravação totalmente offline.
 - A opção **Movimento VHS** no menu de processamento converte fontes de 50/60 fps
   em campos alternados e mantém uma saída progressiva compatível. Em fontes de
   30 fps, o processamento permanece normal.
+- O modo de câmera **VHS 60** grava internamente em FHD 16:9 a 60 fps usando
+  apenas preview e vídeo. O processamento recorta o centro para 4:3 640×480.
 
 ## Compilar
 
