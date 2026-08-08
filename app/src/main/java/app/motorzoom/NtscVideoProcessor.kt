@@ -24,12 +24,15 @@ import kotlin.math.roundToInt
 /** Offline 480p pipeline: MediaCodec -> official ntsc-rs core -> MediaCodec. */
 class NtscVideoProcessor(private val context: Context) {
     private val resolver: ContentResolver = context.contentResolver
+    data class ZoomKeyframe(val timeUs: Long, val zoom: Float)
+
     data class MotorZoomSettings(
         val enabled: Boolean = false,
         val startUs: Long = 0L,
         val durationUs: Long = 1L,
         val startZoom: Float = 1f,
-        val endZoom: Float = 1f
+        val endZoom: Float = 1f,
+        val keyframes: List<ZoomKeyframe> = emptyList()
     )
 
     data class VisualSettings(
@@ -245,6 +248,7 @@ class NtscVideoProcessor(private val context: Context) {
         var inputDone = false
         var outputDone = false
         var frameNumber = 0
+        var firstPresentationTimeUs = -1L
         var firstField: ByteArray? = null
         try {
             while (!outputDone) {
@@ -268,17 +272,19 @@ class NtscVideoProcessor(private val context: Context) {
                 val outputIndex = decoder.dequeueOutputBuffer(info, TIMEOUT_US)
                 if (outputIndex >= 0) {
                     if (info.size > 0) {
+                        if (firstPresentationTimeUs < 0L) firstPresentationTimeUs = info.presentationTimeUs
+                        val timelineUs = (info.presentationTimeUs - firstPresentationTimeUs).coerceAtLeast(0L)
                         val image = decoder.getOutputImage(outputIndex)
                             ?: error("O decodificador do aparelho não forneceu quadros YUV")
                         val rgba = imageToRgba(
                             image, INTERLACED_WIDTH, INTERLACED_HEIGHT,
-                            zoomAt(info.presentationTimeUs, motorZoom),
+                            zoomAt(timelineUs, motorZoom),
                             if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
                         )
                         image.close()
                         applyVisualEffects(
                             rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT,
-                            info.presentationTimeUs, visual
+                            timelineUs, visual
                         )
                         check(NativeNtsc.processRgba(
                             rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT, frameNumber++
@@ -354,6 +360,7 @@ class NtscVideoProcessor(private val context: Context) {
         var decoderDone = false
         var encoderDone = false
         var frame = 0
+        var firstPresentationTimeUs = -1L
         var muxerStarted = false
         var videoMuxTrack = -1
         var audioMuxTrack = -1
@@ -379,16 +386,21 @@ class NtscVideoProcessor(private val context: Context) {
                     val index = decoder.dequeueOutputBuffer(decoderInfo, TIMEOUT_US)
                     if (index >= 0) {
                         if (decoderInfo.size > 0) {
+                            if (firstPresentationTimeUs < 0L) {
+                                firstPresentationTimeUs = decoderInfo.presentationTimeUs
+                            }
+                            val timelineUs = (decoderInfo.presentationTimeUs - firstPresentationTimeUs)
+                                .coerceAtLeast(0L)
                             val image = decoder.getOutputImage(index)
                                 ?: error("O decodificador do aparelho não forneceu quadros YUV")
-                            val zoom = zoomAt(decoderInfo.presentationTimeUs, motorZoom)
+                            val zoom = zoomAt(timelineUs, motorZoom)
                             val rgba = imageToRgba(
                                 image, WIDTH, HEIGHT, zoom,
                                 if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
                             )
                             image.close()
                             applyVisualEffects(
-                                rgba, WIDTH, HEIGHT, decoderInfo.presentationTimeUs, visual
+                                rgba, WIDTH, HEIGHT, timelineUs, visual
                             )
                             check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
                                 "Falha no núcleo NTSC-RS"
@@ -489,6 +501,22 @@ class NtscVideoProcessor(private val context: Context) {
     /** Trapezoidal motor curve: 120 ms acceleration, constant speed, 120 ms braking. */
     private fun zoomAt(timeUs: Long, settings: MotorZoomSettings): Float {
         if (!settings.enabled) return 1f
+        if (settings.keyframes.isNotEmpty()) {
+            val points = settings.keyframes
+            if (timeUs <= points.first().timeUs) return points.first().zoom
+            if (timeUs >= points.last().timeUs) return points.last().zoom
+            var low = 0
+            var high = points.lastIndex
+            while (low + 1 < high) {
+                val middle = (low + high) ushr 1
+                if (points[middle].timeUs <= timeUs) low = middle else high = middle
+            }
+            val before = points[low]
+            val after = points[high]
+            val span = (after.timeUs - before.timeUs).coerceAtLeast(1L)
+            val amount = ((timeUs - before.timeUs).toDouble() / span).toFloat()
+            return (before.zoom + (after.zoom - before.zoom) * amount).coerceIn(1f, 4f)
+        }
         val raw = ((timeUs - settings.startUs).toDouble() / settings.durationUs.coerceAtLeast(1))
             .coerceIn(0.0, 1.0)
         val ramp = min(0.25, 120_000.0 / settings.durationUs.coerceAtLeast(1))
