@@ -4,7 +4,10 @@ import android.Manifest
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -13,9 +16,11 @@ import android.provider.MediaStore
 import android.text.InputType
 import android.util.Rational
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.View
 import android.view.Gravity
 import android.view.WindowManager
+import android.view.TextureView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -26,7 +31,6 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
@@ -78,6 +82,10 @@ class MainActivity : AppCompatActivity() {
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) showPostZoomDialog(uri)
+    }
+
+    private val photoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) showPhotoProcessorDialog(uri)
     }
 
     private val presetPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -358,13 +366,166 @@ class MainActivity : AppCompatActivity() {
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS • $presetName")
-            .setMessage("Importe um vídeo da câmera Samsung para aplicar zoom de filmadora, recorte 4:3 e NTSC-RS.")
-            .setPositiveButton("Escolher vídeo") { _, _ -> videoPicker.launch(arrayOf("video/*")) }
-            .setNeutralButton("Importar preset") { _, _ ->
-                presetPicker.launch(arrayOf("application/json", "text/plain"))
+            .setItems(arrayOf("Processar vídeo", "Processar foto", "Importar preset")) { _, choice ->
+                when (choice) {
+                    0 -> videoPicker.launch(arrayOf("video/*"))
+                    1 -> photoPicker.launch(arrayOf("image/*"))
+                    2 -> presetPicker.launch(arrayOf("application/json", "text/plain"))
+                }
             }
-            .setNegativeButton("Cancelar", null)
             .show()
+    }
+
+    private fun showPhotoProcessorDialog(uri: Uri) {
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, 0)
+        }
+        val scroll = ScrollView(this).apply { addView(content) }
+        content.addView(TextView(this).apply {
+            text = "Saída PNG sem perdas • recorte central 4:3 • resolução NTSC 640×480"
+        })
+
+        fun addSlider(
+            parent: LinearLayout,
+            title: String,
+            minimum: Float,
+            maximum: Float,
+            step: Float,
+            initial: Float,
+            valueText: (Float) -> String
+        ): Slider {
+            val label = TextView(this).apply { text = "$title: ${valueText(initial)}" }
+            parent.addView(label)
+            return Slider(this).also { slider ->
+                slider.valueFrom = minimum
+                slider.valueTo = maximum
+                slider.stepSize = step
+                slider.value = initial
+                slider.addOnChangeListener { _, value, _ ->
+                    label.text = "$title: ${valueText(value)}"
+                }
+                parent.addView(slider)
+            }
+        }
+
+        val colorEnabled = CheckBox(this).apply { text = "Ajustar cores" }
+        content.addView(colorEnabled)
+        val colorPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(colorPanel)
+        val temperature = addSlider(colorPanel, "Temperatura", -100f, 100f, 1f, 0f) {
+            String.format(Locale.US, "%+.0f", it)
+        }
+        val saturation = addSlider(colorPanel, "Saturação", 0f, 2f, 0.05f, 1f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        val contrast = addSlider(colorPanel, "Contraste", 0.5f, 1.5f, 0.05f, 1f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        val brightness = addSlider(colorPanel, "Brilho", -0.5f, 0.5f, 0.05f, 0f) {
+            String.format(Locale.US, "%+.0f%%", it * 100f)
+        }
+        val tint = addSlider(colorPanel, "Matiz verde/magenta", -100f, 100f, 1f, 0f) {
+            String.format(Locale.US, "%+.0f", it)
+        }
+        colorEnabled.setOnCheckedChangeListener { _, checked ->
+            colorPanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val fishEyeEnabled = CheckBox(this).apply { text = "Lente fish-eye" }
+        content.addView(fishEyeEnabled)
+        val fishEyePanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(fishEyePanel)
+        val fishEyeStrength = addSlider(
+            fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f
+        ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+        fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
+            fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val overlayEnabled = CheckBox(this).apply { text = "Data e horário de filmadora VHS" }
+        content.addView(overlayEnabled)
+        val overlayDate = EditText(this).apply {
+            setText(SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date()))
+            inputType = InputType.TYPE_CLASS_DATETIME
+            visibility = View.GONE
+        }
+        content.addView(overlayDate)
+        overlayEnabled.setOnCheckedChangeListener { _, checked ->
+            overlayDate.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Processar foto • $presetName")
+            .setView(scroll)
+            .setPositiveButton("Processar", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val dateParser = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).apply {
+                    isLenient = false
+                }
+                val overlayEpoch = if (overlayEnabled.isChecked) {
+                    runCatching { dateParser.parse(overlayDate.text.toString())!!.time }
+                        .getOrElse {
+                            Toast.makeText(this, "Data inválida", Toast.LENGTH_LONG).show()
+                            return@setOnClickListener
+                        }
+                } else System.currentTimeMillis()
+                val visual = NtscVideoProcessor.VisualSettings(
+                    colorEnabled = colorEnabled.isChecked,
+                    temperature = temperature.value / 100f,
+                    saturation = saturation.value,
+                    contrast = contrast.value,
+                    brightness = brightness.value,
+                    tint = tint.value / 100f,
+                    fishEyeEnabled = fishEyeEnabled.isChecked,
+                    fishEyeStrength = fishEyeStrength.value,
+                    overlayEnabled = overlayEnabled.isChecked,
+                    overlayStartEpochMs = overlayEpoch
+                )
+                dialog.dismiss()
+                startPhotoProcessing(uri, visual)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun startPhotoProcessing(uri: Uri, visual: NtscVideoProcessor.VisualSettings) {
+        binding.ntscButton.isEnabled = false
+        binding.ntscButton.text = "FOTO…"
+        cameraExecutor.execute {
+            try {
+                NtscVideoProcessor(applicationContext).processPhoto(uri, presetJson, visual)
+                runOnUiThread {
+                    binding.ntscButton.isEnabled = true
+                    binding.ntscButton.text = getString(R.string.ntsc_rs)
+                    Toast.makeText(
+                        this,
+                        "PNG salvo em Pictures/MotorZoom",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    binding.ntscButton.isEnabled = true
+                    binding.ntscButton.text = getString(R.string.ntsc_rs)
+                    androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("Erro ao processar foto")
+                        .setMessage(error.message ?: error.javaClass.simpleName)
+                        .setPositiveButton("Fechar", null)
+                        .show()
+                }
+            }
+        }
     }
 
     private fun showPostZoomDialog(uri: Uri) {
@@ -658,7 +819,7 @@ class MainActivity : AppCompatActivity() {
 
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val video = VideoView(this).apply {
+        val video = TextureView(this).apply {
             setBackgroundColor(Color.BLACK)
         }
         root.addView(video, FrameLayout.LayoutParams(
@@ -685,7 +846,8 @@ class MainActivity : AppCompatActivity() {
         var editorSpeed = 0.35f
         var editorZoom = 1f
         var lastPositionMs = 0L
-        var preparedPlayer: android.media.MediaPlayer? = null
+        var preparedPlayer: MediaPlayer? = null
+        var playbackSurface: Surface? = null
         val points = mutableListOf<NtscVideoProcessor.ZoomKeyframe>()
 
         val status = TextView(this).apply {
@@ -767,7 +929,10 @@ class MainActivity : AppCompatActivity() {
             }
         })
         val buttonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val recordButton = Button(this).apply { text = "GRAVAR" }
+        val recordButton = Button(this).apply {
+            text = "CARREGANDO…"
+            isEnabled = false
+        }
         val saveButton = Button(this).apply { text = "USAR MOVIMENTO" }
         val cancelButton = Button(this).apply { text = "CANCELAR" }
         buttonRow.addView(recordButton, LinearLayout.LayoutParams(0, dp(48), 1f))
@@ -798,19 +963,21 @@ class MainActivity : AppCompatActivity() {
             fun beginPlayback() {
                 if (!dialog.isShowing) return
                 lastPositionMs = 0L
-                video.start()
+                preparedPlayer?.start()
                 recordingAutomation = true
                 status.text = "REC • 1.00× • segure T ou W"
             }
             val player = preparedPlayer
-            if (player != null && video.currentPosition > 50) {
+            if (player == null) {
+                Toast.makeText(this, "O vídeo ainda está carregando", Toast.LENGTH_SHORT).show()
+            } else if (player.currentPosition > 50) {
                 player.setOnSeekCompleteListener { completed ->
                     completed.setOnSeekCompleteListener(null)
                     beginPlayback()
                 }
-                video.seekTo(0)
+                player.seekTo(0)
             } else {
-                video.seekTo(0)
+                player.seekTo(0)
                 beginPlayback()
             }
         }
@@ -822,39 +989,97 @@ class MainActivity : AppCompatActivity() {
             } else {
                 recordingAutomation = false
                 editorDirection = 0
-                video.pause()
+                preparedPlayer?.pause()
                 onSave(points.toList())
                 dialog.dismiss()
             }
         }
         cancelButton.setOnClickListener { dialog.dismiss() }
-        video.setOnPreparedListener { player ->
+        fun updateVideoTransform(videoWidth: Int, videoHeight: Int) {
+            if (video.width == 0 || video.height == 0 || videoWidth == 0 || videoHeight == 0) return
+            val viewWidth = video.width.toFloat()
+            val viewHeight = video.height.toFloat()
+            val fill = max(viewWidth / videoWidth, viewHeight / videoHeight)
+            val scaleX = videoWidth * fill / viewWidth
+            val scaleY = videoHeight * fill / viewHeight
+            video.setTransform(Matrix().apply {
+                setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
+            })
+        }
+
+        fun preparePlayer(surfaceTexture: SurfaceTexture) {
+            playbackSurface?.release()
+            val surface = Surface(surfaceTexture)
+            playbackSurface = surface
+            val player = MediaPlayer()
             preparedPlayer = player
-            video.seekTo(1)
-            status.text = "Pronto • toque em GRAVAR e use T/W durante a reprodução"
-        }
-        video.setOnErrorListener { _, what, extra ->
-            status.text = "Erro ao abrir o vídeo ($what/$extra)"
-            Toast.makeText(this, "Não foi possível reproduzir este vídeo", Toast.LENGTH_LONG).show()
-            true
-        }
-        video.setOnCompletionListener {
-            if (recordingAutomation) {
-                points += NtscVideoProcessor.ZoomKeyframe(
-                    (video.duration.coerceAtLeast(0) * 1_000L),
-                    editorZoom
-                )
-                recordingAutomation = false
-                editorDirection = 0
-                status.text = String.format(Locale.US, "Concluído • %.2f× • toque em USAR MOVIMENTO", editorZoom)
+            player.setSurface(surface)
+            player.setOnPreparedListener { ready ->
+                ready.seekTo(1)
+                recordButton.text = "GRAVAR"
+                recordButton.isEnabled = true
+                status.text = "Pronto • toque em GRAVAR e use T/W durante a reprodução"
             }
+            player.setOnVideoSizeChangedListener { _, width, height ->
+                video.post { updateVideoTransform(width, height) }
+            }
+            player.setOnErrorListener { _, what, extra ->
+                status.text = "Erro ao abrir o vídeo ($what/$extra)"
+                recordButton.text = "ERRO"
+                recordButton.isEnabled = false
+                Toast.makeText(this, "Não foi possível reproduzir este vídeo", Toast.LENGTH_LONG).show()
+                true
+            }
+            player.setOnCompletionListener { completed ->
+                if (recordingAutomation) {
+                    points += NtscVideoProcessor.ZoomKeyframe(
+                        (completed.duration.coerceAtLeast(0) * 1_000L),
+                        editorZoom
+                    )
+                    recordingAutomation = false
+                    editorDirection = 0
+                    status.text = String.format(
+                        Locale.US,
+                        "Concluído • %.2f× • toque em USAR MOVIMENTO",
+                        editorZoom
+                    )
+                }
+            }
+            try {
+                player.setDataSource(this, uri)
+                player.prepareAsync()
+            } catch (error: Exception) {
+                status.text = "Erro ao abrir o vídeo: ${error.message}"
+                recordButton.text = "ERRO"
+            }
+        }
+
+        video.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                preparePlayer(surface)
+            }
+
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                val player = preparedPlayer ?: return
+                updateVideoTransform(player.videoWidth, player.videoHeight)
+            }
+
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                preparedPlayer?.setSurface(null)
+                playbackSurface?.release()
+                playbackSurface = null
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
         }
 
         val frameCallback = object : android.view.Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
                 if (!dialog.isShowing) return
-                if (recordingAutomation && video.isPlaying) {
-                    val positionMs = video.currentPosition.toLong().coerceAtLeast(lastPositionMs)
+                val player = preparedPlayer
+                if (recordingAutomation && player?.isPlaying == true) {
+                    val positionMs = player.currentPosition.toLong().coerceAtLeast(lastPositionMs)
                     val elapsedSeconds = (positionMs - lastPositionMs) / 1000f
                     if (elapsedSeconds > 0f) {
                         editorZoom = (editorZoom + editorDirection * editorSpeed * elapsedSeconds)
@@ -880,8 +1105,13 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnDismissListener {
             recordingAutomation = false
             editorDirection = 0
-            video.stopPlayback()
+            preparedPlayer?.let { player ->
+                runCatching { player.setSurface(null) }
+                player.release()
+            }
             preparedPlayer = null
+            playbackSurface?.release()
+            playbackSurface = null
             android.view.Choreographer.getInstance().removeFrameCallback(frameCallback)
             binding.previewView.visibility = View.VISIBLE
             binding.previewView.postDelayed({
@@ -893,7 +1123,6 @@ class MainActivity : AppCompatActivity() {
             setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
             addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-        video.setVideoURI(uri)
         video.requestFocus()
         android.view.Choreographer.getInstance().postFrameCallback(frameCallback)
     }
