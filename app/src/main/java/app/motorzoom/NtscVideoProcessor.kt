@@ -52,12 +52,12 @@ class NtscVideoProcessor(private val context: Context) {
         val fishEyeEnabled: Boolean = false,
         val fishEyeStrength: Float = 0.35f,
         val ccdSmearEnabled: Boolean = false,
-        val ccdSmearThreshold: Float = 0.93f,
-        val ccdSmearKnee: Float = 0.06f,
-        val ccdSmearLength: Float = 0.82f,
-        val ccdSmearIntensity: Float = 0.35f,
-        val ccdSmearTint: Int = 1,
-        val ccdSmearFlicker: Float = 0.04f,
+        val ccdSmearThreshold: Float = 0.985f,
+        val ccdSmearKnee: Float = 0.015f,
+        val ccdSmearLength: Float = 0.65f,
+        val ccdSmearIntensity: Float = 0.15f,
+        val ccdSmearTint: Int = 0,
+        val ccdSmearFlicker: Float = 0.02f,
         val overlayEnabled: Boolean = false,
         val overlayStartEpochMs: Long = 0L
     )
@@ -725,14 +725,17 @@ class NtscVideoProcessor(private val context: Context) {
 
     private var smearBufferWidth = 0
     private var smearBufferHeight = 0
+    // RGB values are interleaved. Keeping the channels separate makes the
+    // streak inherit the colour of the clipped light instead of using one tint.
     private var smearBright = FloatArray(0)
     private var smearDown = FloatArray(0)
     private var smearUp = FloatArray(0)
 
     /**
      * Simulates charge leaking into an interline CCD's vertical transfer register.
-     * Detection and propagation run at quarter resolution; the additive composite
-     * is bilinearly sampled at output resolution so streaks remain narrow and smooth.
+     * Detection runs at half horizontal and quarter vertical resolution. Only
+     * near-clipped light sources create charge, and their RGB colour is propagated
+     * independently before a bilinearly sampled additive composite is applied.
      */
     private fun applyCcdVerticalSmear(
         rgba: ByteArray,
@@ -741,9 +744,9 @@ class NtscVideoProcessor(private val context: Context) {
         frameNumber: Int,
         settings: VisualSettings
     ) {
-        val reducedWidth = (width + 3) / 4
+        val reducedWidth = (width + 1) / 2
         val reducedHeight = (height + 3) / 4
-        val reducedSize = reducedWidth * reducedHeight
+        val reducedSize = reducedWidth * reducedHeight * 3
         if (reducedWidth != smearBufferWidth || reducedHeight != smearBufferHeight) {
             smearBufferWidth = reducedWidth
             smearBufferHeight = reducedHeight
@@ -754,8 +757,9 @@ class NtscVideoProcessor(private val context: Context) {
             java.util.Arrays.fill(smearBright, 0f)
         }
 
-        val threshold = settings.ccdSmearThreshold.coerceIn(0.85f, 0.98f)
-        val knee = settings.ccdSmearKnee.coerceIn(0.02f, 0.15f)
+        val threshold = settings.ccdSmearThreshold.coerceIn(0.95f, 0.995f)
+        val knee = settings.ccdSmearKnee.coerceIn(0.005f, 0.05f)
+        val activationStart = (threshold - knee).coerceAtLeast(0.90f)
         for (y in 0 until height) {
             val reducedY = y / 4
             for (x in 0 until width) {
@@ -763,41 +767,68 @@ class NtscVideoProcessor(private val context: Context) {
                 val red = (rgba[at].toInt() and 255) / 255f
                 val green = (rgba[at + 1].toInt() and 255) / 255f
                 val blue = (rgba[at + 2].toInt() and 255) / 255f
-                val luma = 0.299f * red + 0.587f * green + 0.114f * blue
                 val peak = max(red, max(green, blue))
-                val highlight = max(luma, peak * 0.98f)
-                val transition = ((highlight - (threshold - knee)) / (2f * knee))
+                if (peak <= activationStart) continue
+                val transition = ((peak - activationStart) / (1f - activationStart))
                     .coerceIn(0f, 1f)
                 val bright = transition * transition * (3f - 2f * transition)
-                val reducedAt = reducedY * reducedWidth + x / 4
-                if (bright > smearBright[reducedAt]) smearBright[reducedAt] = bright
+                if (bright <= 0f) continue
+
+                // A CCD smear normally follows the source colour, but saturated
+                // highlights tend toward white after demosaicing and camera colour
+                // processing. A 40% white mix gives that behaviour without losing
+                // the amber/blue identity of the light.
+                val whiteMix = 0.40f
+                val sourceRed = ((red / peak) * (1f - whiteMix) + whiteMix) * bright
+                val sourceGreen = ((green / peak) * (1f - whiteMix) + whiteMix) * bright
+                val sourceBlue = ((blue / peak) * (1f - whiteMix) + whiteMix) * bright
+                val reducedAt = (reducedY * reducedWidth + x / 2) * 3
+                if (sourceRed > smearBright[reducedAt]) smearBright[reducedAt] = sourceRed
+                if (sourceGreen > smearBright[reducedAt + 1]) smearBright[reducedAt + 1] = sourceGreen
+                if (sourceBlue > smearBright[reducedAt + 2]) smearBright[reducedAt + 2] = sourceBlue
             }
         }
 
-        // Friendly 0..1 length control maps to a long exponential CCD trail.
-        val decay = 0.90f + settings.ccdSmearLength.coerceIn(0f, 1f) * 0.095f
+        // The previous decay was close to 1.0 and made every detected highlight
+        // cross almost the entire frame. This range keeps long trails available
+        // while making the default resemble a consumer CCD camcorder.
+        val decay = 0.86f + settings.ccdSmearLength.coerceIn(0f, 1f) * 0.13f
         for (x in 0 until reducedWidth) {
-            var carried = 0f
+            var carriedRed = 0f
+            var carriedGreen = 0f
+            var carriedBlue = 0f
             for (y in 0 until reducedHeight) {
-                val at = y * reducedWidth + x
-                carried = max(smearBright[at], carried * decay)
-                smearDown[at] = carried
+                val at = (y * reducedWidth + x) * 3
+                carriedRed = max(smearBright[at], carriedRed * decay)
+                carriedGreen = max(smearBright[at + 1], carriedGreen * decay)
+                carriedBlue = max(smearBright[at + 2], carriedBlue * decay)
+                smearDown[at] = carriedRed
+                smearDown[at + 1] = carriedGreen
+                smearDown[at + 2] = carriedBlue
             }
-            carried = 0f
+            carriedRed = 0f
+            carriedGreen = 0f
+            carriedBlue = 0f
             for (y in reducedHeight - 1 downTo 0) {
-                val at = y * reducedWidth + x
-                carried = max(smearBright[at], carried * decay)
-                smearUp[at] = carried
+                val at = (y * reducedWidth + x) * 3
+                carriedRed = max(smearBright[at], carriedRed * decay)
+                carriedGreen = max(smearBright[at + 1], carriedGreen * decay)
+                carriedBlue = max(smearBright[at + 2], carriedBlue * decay)
+                smearUp[at] = carriedRed
+                smearUp[at + 1] = carriedGreen
+                smearUp[at + 2] = carriedBlue
             }
         }
 
-        var tintRed = 0.92f
+        // 0 is automatic. The remaining entries deliberately override the source
+        // colour for users who want a stylised sensor bias.
+        var tintRed = 1f
         var tintGreen = 1f
-        var tintBlue = 0.88f
+        var tintBlue = 1f
         when (settings.ccdSmearTint) {
-            0 -> { tintRed = 1f; tintGreen = 1f; tintBlue = 1f }
-            2 -> { tintRed = 1f; tintGreen = 0.90f; tintBlue = 0.68f }
-            3 -> { tintRed = 0.88f; tintGreen = 0.78f; tintBlue = 1f }
+            2 -> { tintRed = 0.92f; tintGreen = 1f; tintBlue = 0.88f }
+            3 -> { tintRed = 1f; tintGreen = 0.90f; tintBlue = 0.68f }
+            4 -> { tintRed = 0.88f; tintGreen = 0.78f; tintBlue = 1f }
         }
         val flickerNoise = (
             kotlin.math.sin(frameNumber * 0.37).toFloat() +
@@ -812,29 +843,63 @@ class NtscVideoProcessor(private val context: Context) {
             val y1 = (y0 + 1).coerceAtMost(reducedHeight - 1)
             val fy = sampleY - y0
             for (x in 0 until width) {
-                val sampleX = x / 4f
+                val sampleX = x / 2f
                 val x0 = sampleX.toInt().coerceIn(0, reducedWidth - 1)
                 val x1 = (x0 + 1).coerceAtMost(reducedWidth - 1)
                 val fx = sampleX - x0
-                val topLeftAt = y0 * reducedWidth + x0
-                val topRightAt = y0 * reducedWidth + x1
-                val bottomLeftAt = y1 * reducedWidth + x0
-                val bottomRightAt = y1 * reducedWidth + x1
-                val top = max(smearDown[topLeftAt], smearUp[topLeftAt]) * (1f - fx) +
-                    max(smearDown[topRightAt], smearUp[topRightAt]) * fx
-                val bottom = max(smearDown[bottomLeftAt], smearUp[bottomLeftAt]) * (1f - fx) +
-                    max(smearDown[bottomRightAt], smearUp[bottomRightAt]) * fx
-                val streak = (top * (1f - fy) + bottom * fy) * intensity * 255f
-                if (streak <= 0.25f) continue
+                val topLeftAt = (y0 * reducedWidth + x0) * 3
+                val topRightAt = (y0 * reducedWidth + x1) * 3
+                val bottomLeftAt = (y1 * reducedWidth + x0) * 3
+                val bottomRightAt = (y1 * reducedWidth + x1) * 3
+                val autoRed = sampleSmearChannel(
+                    topLeftAt, topRightAt, bottomLeftAt, bottomRightAt, 0, fx, fy
+                )
+                val autoGreen = sampleSmearChannel(
+                    topLeftAt, topRightAt, bottomLeftAt, bottomRightAt, 1, fx, fy
+                )
+                val autoBlue = sampleSmearChannel(
+                    topLeftAt, topRightAt, bottomLeftAt, bottomRightAt, 2, fx, fy
+                )
+                val peakStreak = max(autoRed, max(autoGreen, autoBlue))
+                if (peakStreak * intensity * 255f <= 0.25f) continue
+                val streakRed: Float
+                val streakGreen: Float
+                val streakBlue: Float
+                if (settings.ccdSmearTint == 0) {
+                    streakRed = autoRed * intensity * 255f
+                    streakGreen = autoGreen * intensity * 255f
+                    streakBlue = autoBlue * intensity * 255f
+                } else {
+                    val manual = peakStreak * intensity * 255f
+                    streakRed = manual * tintRed
+                    streakGreen = manual * tintGreen
+                    streakBlue = manual * tintBlue
+                }
                 val at = (y * width + x) * 4
-                rgba[at] = ((rgba[at].toInt() and 255) + streak * tintRed)
+                rgba[at] = ((rgba[at].toInt() and 255) + streakRed)
                     .roundToInt().coerceIn(0, 255).toByte()
-                rgba[at + 1] = ((rgba[at + 1].toInt() and 255) + streak * tintGreen)
+                rgba[at + 1] = ((rgba[at + 1].toInt() and 255) + streakGreen)
                     .roundToInt().coerceIn(0, 255).toByte()
-                rgba[at + 2] = ((rgba[at + 2].toInt() and 255) + streak * tintBlue)
+                rgba[at + 2] = ((rgba[at + 2].toInt() and 255) + streakBlue)
                     .roundToInt().coerceIn(0, 255).toByte()
             }
         }
+    }
+
+    private fun sampleSmearChannel(
+        topLeftAt: Int,
+        topRightAt: Int,
+        bottomLeftAt: Int,
+        bottomRightAt: Int,
+        channel: Int,
+        fx: Float,
+        fy: Float
+    ): Float {
+        val top = max(smearDown[topLeftAt + channel], smearUp[topLeftAt + channel]) * (1f - fx) +
+            max(smearDown[topRightAt + channel], smearUp[topRightAt + channel]) * fx
+        val bottom = max(smearDown[bottomLeftAt + channel], smearUp[bottomLeftAt + channel]) * (1f - fx) +
+            max(smearDown[bottomRightAt + channel], smearUp[bottomRightAt + channel]) * fx
+        return top * (1f - fy) + bottom * fy
     }
 
     private fun applyFishEyeRgba(rgba: ByteArray, width: Int, height: Int, strength: Float) {
