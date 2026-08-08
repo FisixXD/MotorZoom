@@ -819,9 +819,7 @@ class MainActivity : AppCompatActivity() {
 
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val video = TextureView(this).apply {
-            setBackgroundColor(Color.BLACK)
-        }
+        val video = TextureView(this)
         root.addView(video, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
