@@ -20,7 +20,7 @@ de filmadora e processamento NTSC-RS totalmente offline.
   vezes quiser e use o movimento gravado no render.
 - Correção opcional de temperatura, saturação, contraste, brilho e matiz.
 - Fish-eye opcional com intensidade ajustável.
-- CCD Vertical Smear opcional para luzes saturadas, aplicado antes do NTSC-RS.
+- CCD Vertical Smear opcional com detecção restrita a luzes saturadas, faixas finas e cor automática baseada na fonte, aplicado antes do NTSC-RS.
 - Data e horário opcionais no estilo de filmadora, degradados pelo próprio NTSC-RS.
 - MP4 progressivo compatível ou MPEG-2 NTSC 480i verdadeiro.
 
