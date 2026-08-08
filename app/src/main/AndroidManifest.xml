@@ -13,6 +13,11 @@
         android:label="Motor Zoom"
         android:theme="@style/Theme.MotorZoom">
         <activity
+            android:name=".GalleryActivity"
+            android:configChanges="orientation|screenSize"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize"
             android:exported="true"
