@@ -24,6 +24,7 @@ import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -50,6 +51,13 @@ class NtscVideoProcessor(private val context: Context) {
         val tint: Float = 0f,
         val fishEyeEnabled: Boolean = false,
         val fishEyeStrength: Float = 0.35f,
+        val ccdSmearEnabled: Boolean = false,
+        val ccdSmearThreshold: Float = 0.93f,
+        val ccdSmearKnee: Float = 0.06f,
+        val ccdSmearLength: Float = 0.82f,
+        val ccdSmearIntensity: Float = 0.35f,
+        val ccdSmearTint: Int = 1,
+        val ccdSmearFlicker: Float = 0.04f,
         val overlayEnabled: Boolean = false,
         val overlayStartEpochMs: Long = 0L
     )
@@ -177,7 +185,7 @@ class NtscVideoProcessor(private val context: Context) {
         if (visual.fishEyeEnabled) {
             applyFishEyeRgba(rgba, WIDTH, HEIGHT, visual.fishEyeStrength)
         }
-        applyVisualEffects(rgba, WIDTH, HEIGHT, 0L, visual)
+        applyVisualEffects(rgba, WIDTH, HEIGHT, 0L, 0, visual)
         check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, 0)) { "Falha no núcleo NTSC-RS" }
         for (index in colors.indices) {
             val at = index * 4
@@ -382,12 +390,13 @@ class NtscVideoProcessor(private val context: Context) {
                             if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
                         )
                         image.close()
+                        val currentFrame = frameNumber++
                         applyVisualEffects(
                             rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT,
-                            timelineUs, visual
+                            timelineUs, currentFrame, visual
                         )
                         check(NativeNtsc.processRgba(
-                            rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT, frameNumber++
+                            rgba, INTERLACED_WIDTH, INTERLACED_HEIGHT, currentFrame
                         )) { "Falha no núcleo NTSC-RS" }
                         val earlier = firstField
                         if (earlier == null) {
@@ -499,10 +508,11 @@ class NtscVideoProcessor(private val context: Context) {
                                 if (visual.fishEyeEnabled) visual.fishEyeStrength else 0f
                             )
                             image.close()
+                            val currentFrame = frame++
                             applyVisualEffects(
-                                rgba, WIDTH, HEIGHT, timelineUs, visual
+                                rgba, WIDTH, HEIGHT, timelineUs, currentFrame, visual
                             )
-                            check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, frame++)) {
+                            check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, currentFrame)) {
                                 "Falha no núcleo NTSC-RS"
                             }
                             queueEncoder(encoder, rgba, decoderInfo.presentationTimeUs, encoderColor)
@@ -699,13 +709,131 @@ class NtscVideoProcessor(private val context: Context) {
         width: Int,
         height: Int,
         timeUs: Long,
+        frameNumber: Int,
         settings: VisualSettings
     ) {
+        if (settings.ccdSmearEnabled) {
+            applyCcdVerticalSmear(rgba, width, height, frameNumber, settings)
+        }
         if (settings.colorEnabled) applyColorCorrection(rgba, settings)
         if (settings.overlayEnabled) {
             val instant = settings.overlayStartEpochMs + timeUs / 1_000L
             val text = SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", Locale.US).format(Date(instant))
             drawTimestamp(rgba, width, height, text)
+        }
+    }
+
+    private var smearBufferWidth = 0
+    private var smearBufferHeight = 0
+    private var smearBright = FloatArray(0)
+    private var smearDown = FloatArray(0)
+    private var smearUp = FloatArray(0)
+
+    /**
+     * Simulates charge leaking into an interline CCD's vertical transfer register.
+     * Detection and propagation run at quarter resolution; the additive composite
+     * is bilinearly sampled at output resolution so streaks remain narrow and smooth.
+     */
+    private fun applyCcdVerticalSmear(
+        rgba: ByteArray,
+        width: Int,
+        height: Int,
+        frameNumber: Int,
+        settings: VisualSettings
+    ) {
+        val reducedWidth = (width + 3) / 4
+        val reducedHeight = (height + 3) / 4
+        val reducedSize = reducedWidth * reducedHeight
+        if (reducedWidth != smearBufferWidth || reducedHeight != smearBufferHeight) {
+            smearBufferWidth = reducedWidth
+            smearBufferHeight = reducedHeight
+            smearBright = FloatArray(reducedSize)
+            smearDown = FloatArray(reducedSize)
+            smearUp = FloatArray(reducedSize)
+        } else {
+            java.util.Arrays.fill(smearBright, 0f)
+        }
+
+        val threshold = settings.ccdSmearThreshold.coerceIn(0.85f, 0.98f)
+        val knee = settings.ccdSmearKnee.coerceIn(0.02f, 0.15f)
+        for (y in 0 until height) {
+            val reducedY = y / 4
+            for (x in 0 until width) {
+                val at = (y * width + x) * 4
+                val red = (rgba[at].toInt() and 255) / 255f
+                val green = (rgba[at + 1].toInt() and 255) / 255f
+                val blue = (rgba[at + 2].toInt() and 255) / 255f
+                val luma = 0.299f * red + 0.587f * green + 0.114f * blue
+                val peak = max(red, max(green, blue))
+                val highlight = max(luma, peak * 0.98f)
+                val transition = ((highlight - (threshold - knee)) / (2f * knee))
+                    .coerceIn(0f, 1f)
+                val bright = transition * transition * (3f - 2f * transition)
+                val reducedAt = reducedY * reducedWidth + x / 4
+                if (bright > smearBright[reducedAt]) smearBright[reducedAt] = bright
+            }
+        }
+
+        // Friendly 0..1 length control maps to a long exponential CCD trail.
+        val decay = 0.90f + settings.ccdSmearLength.coerceIn(0f, 1f) * 0.095f
+        for (x in 0 until reducedWidth) {
+            var carried = 0f
+            for (y in 0 until reducedHeight) {
+                val at = y * reducedWidth + x
+                carried = max(smearBright[at], carried * decay)
+                smearDown[at] = carried
+            }
+            carried = 0f
+            for (y in reducedHeight - 1 downTo 0) {
+                val at = y * reducedWidth + x
+                carried = max(smearBright[at], carried * decay)
+                smearUp[at] = carried
+            }
+        }
+
+        var tintRed = 0.92f
+        var tintGreen = 1f
+        var tintBlue = 0.88f
+        when (settings.ccdSmearTint) {
+            0 -> { tintRed = 1f; tintGreen = 1f; tintBlue = 1f }
+            2 -> { tintRed = 1f; tintGreen = 0.90f; tintBlue = 0.68f }
+            3 -> { tintRed = 0.88f; tintGreen = 0.78f; tintBlue = 1f }
+        }
+        val flickerNoise = (
+            kotlin.math.sin(frameNumber * 0.37).toFloat() +
+                kotlin.math.sin(frameNumber * 0.11 + 1.7).toFloat() * 0.5f
+            ) / 1.5f
+        val intensity = settings.ccdSmearIntensity.coerceIn(0f, 1f) *
+            (1f + flickerNoise * settings.ccdSmearFlicker.coerceIn(0f, 0.3f))
+
+        for (y in 0 until height) {
+            val sampleY = y / 4f
+            val y0 = sampleY.toInt().coerceIn(0, reducedHeight - 1)
+            val y1 = (y0 + 1).coerceAtMost(reducedHeight - 1)
+            val fy = sampleY - y0
+            for (x in 0 until width) {
+                val sampleX = x / 4f
+                val x0 = sampleX.toInt().coerceIn(0, reducedWidth - 1)
+                val x1 = (x0 + 1).coerceAtMost(reducedWidth - 1)
+                val fx = sampleX - x0
+                val topLeftAt = y0 * reducedWidth + x0
+                val topRightAt = y0 * reducedWidth + x1
+                val bottomLeftAt = y1 * reducedWidth + x0
+                val bottomRightAt = y1 * reducedWidth + x1
+                val top = max(smearDown[topLeftAt], smearUp[topLeftAt]) * (1f - fx) +
+                    max(smearDown[topRightAt], smearUp[topRightAt]) * fx
+                val bottom = max(smearDown[bottomLeftAt], smearUp[bottomLeftAt]) * (1f - fx) +
+                    max(smearDown[bottomRightAt], smearUp[bottomRightAt]) * fx
+                val streak = (top * (1f - fy) + bottom * fy) * intensity * 255f
+                if (streak <= 0.25f) continue
+                val at = (y * width + x) * 4
+                rgba[at] = ((rgba[at].toInt() and 255) + streak * tintRed)
+                    .roundToInt().coerceIn(0, 255).toByte()
+                rgba[at + 1] = ((rgba[at + 1].toInt() and 255) + streak * tintGreen)
+                    .roundToInt().coerceIn(0, 255).toByte()
+                rgba[at + 2] = ((rgba[at + 2].toInt() and 255) + streak * tintBlue)
+                    .roundToInt().coerceIn(0, 255).toByte()
+            }
         }
     }
 
