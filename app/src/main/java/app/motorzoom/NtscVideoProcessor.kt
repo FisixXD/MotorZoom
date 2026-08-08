@@ -542,7 +542,10 @@ class NtscVideoProcessor(private val context: Context) {
         val crop = image.cropRect
         val planes = image.planes
         val output = ByteArray(outWidth * outHeight * 4)
-        val targetRatio = outWidth.toFloat() / outHeight
+        // Both outputs have a 4:3 display aspect. The 720x480 NTSC stream uses
+        // non-square pixels, so 720/480 (3:2) is its storage ratio, not the
+        // framing ratio. Crop the source to 4:3 before scaling to either raster.
+        val targetRatio = 4f / 3f
         val sourceRatio = crop.width().toFloat() / crop.height()
         val baseWidth = if (sourceRatio > targetRatio) {
             (crop.height() * targetRatio).toInt()
