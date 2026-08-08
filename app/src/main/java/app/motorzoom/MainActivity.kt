@@ -54,7 +54,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -74,9 +73,6 @@ class MainActivity : AppCompatActivity() {
     private var zoomUnitsPerSecond = 0.35f
     private var zoomStartNanos = 0L
     private var zoomStartRatio = 1f
-    private var lastZoomSubmitNanos = 0L
-    private var zoomRequestInFlight = false
-    private var latestZoomRequest = 1f
     private var presetJson = ""
     private var presetName = "Padrão"
 
@@ -115,12 +111,10 @@ class MainActivity : AppCompatActivity() {
                 .coerceIn(minZoom, maxZoom)
             binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
 
-            // Camera commands are asynchronous. Coalescing them prevents a backlog
-            // when video encoding briefly occupies the camera service.
-            if (frameTimeNanos - lastZoomSubmitNanos >= 33_333_333L) {
-                lastZoomSubmitNanos = frameTimeNanos
-                submitZoom(currentZoom)
-            }
+            // Keep sending the desired ratio on every display frame. CameraX drops
+            // superseded requests itself; waiting for each Future made the Galaxy A06
+            // visibly jump between zoom values, especially while recording.
+            camera?.cameraControl?.setZoomRatio(currentZoom)
 
             if ((currentZoom <= minZoom && zoomDirection < 0) ||
                 (currentZoom >= maxZoom && zoomDirection > 0)) {
@@ -197,7 +191,6 @@ class MainActivity : AppCompatActivity() {
         if (zoomDirection == direction) return
         zoomDirection = direction
         zoomStartNanos = 0L
-        lastZoomSubmitNanos = 0L
         android.view.Choreographer.getInstance().removeFrameCallback(zoomFrame)
         android.view.Choreographer.getInstance().postFrameCallback(zoomFrame)
     }
@@ -206,24 +199,7 @@ class MainActivity : AppCompatActivity() {
         zoomDirection = 0
         zoomStartNanos = 0L
         android.view.Choreographer.getInstance().removeFrameCallback(zoomFrame)
-        submitZoom(currentZoom)
-    }
-
-    private fun submitZoom(value: Float) {
-        latestZoomRequest = value
-        dispatchCameraXZoom()
-    }
-
-    private fun dispatchCameraXZoom() {
-        val control = camera?.cameraControl ?: return
-        if (zoomRequestInFlight) return
-        val submitted = latestZoomRequest
-        zoomRequestInFlight = true
-        val request = control.setZoomRatio(submitted)
-        request.addListener({
-            zoomRequestInFlight = false
-            if (abs(latestZoomRequest - submitted) >= 0.002f) dispatchCameraXZoom()
-        }, ContextCompat.getMainExecutor(this))
+        camera?.cameraControl?.setZoomRatio(currentZoom)
     }
 
     private fun startCamera() {
@@ -271,7 +247,6 @@ class MainActivity : AppCompatActivity() {
                     maxZoom = min(4f, state.maxZoomRatio)
                     if (zoomDirection == 0) {
                         currentZoom = state.zoomRatio.coerceIn(minZoom, maxZoom)
-                        latestZoomRequest = currentZoom
                         binding.zoomLabel.text = String.format(Locale.US, "%.2f×", currentZoom)
                     }
                 }
@@ -653,13 +628,37 @@ class MainActivity : AppCompatActivity() {
         uri: Uri,
         onSave: (List<NtscVideoProcessor.ZoomKeyframe>) -> Unit
     ) {
+        stopZoom()
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            try {
+                providerFuture.get().unbindAll()
+                camera = null
+                videoCapture = null
+                imageCapture = null
+                binding.previewView.visibility = View.INVISIBLE
+                openZoomAutomationEditor(uri, onSave)
+            } catch (error: Exception) {
+                Toast.makeText(
+                    this,
+                    "Não foi possível abrir o editor: ${error.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+                startCamera()
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun openZoomAutomationEditor(
+        uri: Uri,
+        onSave: (List<NtscVideoProcessor.ZoomKeyframe>) -> Unit
+    ) {
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val video = VideoView(this).apply {
-            setVideoURI(uri)
             setBackgroundColor(Color.BLACK)
         }
         root.addView(video, FrameLayout.LayoutParams(
@@ -831,7 +830,13 @@ class MainActivity : AppCompatActivity() {
         cancelButton.setOnClickListener { dialog.dismiss() }
         video.setOnPreparedListener { player ->
             preparedPlayer = player
+            video.seekTo(1)
             status.text = "Pronto • toque em GRAVAR e use T/W durante a reprodução"
+        }
+        video.setOnErrorListener { _, what, extra ->
+            status.text = "Erro ao abrir o vídeo ($what/$extra)"
+            Toast.makeText(this, "Não foi possível reproduzir este vídeo", Toast.LENGTH_LONG).show()
+            true
         }
         video.setOnCompletionListener {
             if (recordingAutomation) {
@@ -878,12 +883,18 @@ class MainActivity : AppCompatActivity() {
             video.stopPlayback()
             preparedPlayer = null
             android.view.Choreographer.getInstance().removeFrameCallback(frameCallback)
+            binding.previewView.visibility = View.VISIBLE
+            binding.previewView.postDelayed({
+                if (!isFinishing && !isDestroyed) startCamera()
+            }, 200L)
         }
         dialog.show()
         dialog.window?.apply {
             setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
             addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        video.setVideoURI(uri)
+        video.requestFocus()
         android.view.Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
