@@ -458,29 +458,29 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(ccdSmearPanel)
         val ccdThreshold = addSlider(
-            ccdSmearPanel, "Limiar da luz", 0.85f, 0.98f, 0.01f, 0.93f
-        ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.985f
+        ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdKnee = addSlider(
-            ccdSmearPanel, "Suavidade", 0.02f, 0.15f, 0.01f, 0.06f
-        ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.015f
+        ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdLength = addSlider(
-            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.82f
+            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.65f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         val ccdIntensity = addSlider(
-            ccdSmearPanel, "Intensidade", 0f, 1f, 0.05f, 0.35f
+            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.15f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearPanel.addView(TextView(this).apply { text = "Cor da faixa" })
         val ccdTint = Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
                 android.R.layout.simple_spinner_dropdown_item,
-                arrayOf("Branco", "Branco-esverdeado", "Branco-âmbar", "Branco-violeta")
+                arrayOf("Automática (cor da luz)", "Branco", "Branco-esverdeado", "Branco-âmbar", "Branco-violeta")
             )
-            setSelection(1)
+            setSelection(0)
         }
         ccdSmearPanel.addView(ccdTint)
         val ccdFlicker = addSlider(
-            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.04f
+            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.02f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearEnabled.setOnCheckedChangeListener { _, checked ->
             ccdSmearPanel.visibility = if (checked) View.VISIBLE else View.GONE
@@ -714,29 +714,29 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(ccdSmearPanel)
         val ccdThreshold = addSlider(
-            ccdSmearPanel, "Limiar da luz", 0.85f, 0.98f, 0.01f, 0.93f
-        ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.985f
+        ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdKnee = addSlider(
-            ccdSmearPanel, "Suavidade", 0.02f, 0.15f, 0.01f, 0.06f
-        ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.015f
+        ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdLength = addSlider(
-            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.82f
+            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.65f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         val ccdIntensity = addSlider(
-            ccdSmearPanel, "Intensidade", 0f, 1f, 0.05f, 0.35f
+            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.15f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearPanel.addView(TextView(this).apply { text = "Cor da faixa" })
         val ccdTint = Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
                 android.R.layout.simple_spinner_dropdown_item,
-                arrayOf("Branco", "Branco-esverdeado", "Branco-âmbar", "Branco-violeta")
+                arrayOf("Automática (cor da luz)", "Branco", "Branco-esverdeado", "Branco-âmbar", "Branco-violeta")
             )
-            setSelection(1)
+            setSelection(0)
         }
         ccdSmearPanel.addView(ccdTint)
         val ccdFlicker = addSlider(
-            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.04f
+            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.02f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearEnabled.setOnCheckedChangeListener { _, checked ->
             ccdSmearPanel.visibility = if (checked) View.VISIBLE else View.GONE
