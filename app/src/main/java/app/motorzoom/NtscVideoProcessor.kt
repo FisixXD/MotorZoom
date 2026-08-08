@@ -52,12 +52,12 @@ class NtscVideoProcessor(private val context: Context) {
         val fishEyeEnabled: Boolean = false,
         val fishEyeStrength: Float = 0.35f,
         val ccdSmearEnabled: Boolean = false,
-        val ccdSmearThreshold: Float = 0.985f,
-        val ccdSmearKnee: Float = 0.015f,
-        val ccdSmearLength: Float = 0.65f,
-        val ccdSmearIntensity: Float = 0.15f,
+        val ccdSmearThreshold: Float = 0.995f,
+        val ccdSmearKnee: Float = 0.005f,
+        val ccdSmearLength: Float = 0.35f,
+        val ccdSmearIntensity: Float = 0.06f,
         val ccdSmearTint: Int = 0,
-        val ccdSmearFlicker: Float = 0.02f,
+        val ccdSmearFlicker: Float = 0f,
         val overlayEnabled: Boolean = false,
         val overlayStartEpochMs: Long = 0L
     )
@@ -730,6 +730,10 @@ class NtscVideoProcessor(private val context: Context) {
     private var smearBright = FloatArray(0)
     private var smearDown = FloatArray(0)
     private var smearUp = FloatArray(0)
+    private val smearHaloOffsets = intArrayOf(
+        -4, 0, 4, 0, 0, -4, 0, 4,
+        -3, -3, 3, -3, -3, 3, 3, 3
+    )
 
     /**
      * Simulates charge leaking into an interline CCD's vertical transfer register.
@@ -771,7 +775,19 @@ class NtscVideoProcessor(private val context: Context) {
                 if (peak <= activationStart) continue
                 val transition = ((peak - activationStart) / (1f - activationStart))
                     .coerceIn(0f, 1f)
-                val bright = transition * transition * (3f - 2f * transition)
+                val clipped = transition * transition * (3f - 2f * transition)
+
+                // A real lamp normally has a small bloom/halo around its clipped
+                // core. Isolated clipped windows have little halo, while broad
+                // signs and white decorations have too much. This band-pass is a
+                // practical way to recover likely point lights from phone footage,
+                // where tone mapping has already destroyed the sensor charge data.
+                val halo = sampleHighlightHalo(rgba, width, height, x, y)
+                val haloSupport = smoothStep(0.05f, 0.28f, halo)
+                val pointContrast = smoothStep(0.10f, 0.45f, peak - halo)
+                val broadSuppression = 1f - smoothStep(0.55f, 0.85f, halo)
+                val sourceWeight = haloSupport * pointContrast * broadSuppression
+                val bright = clipped * sourceWeight * sourceWeight
                 if (bright <= 0f) continue
 
                 // A CCD smear normally follows the source colour, but saturated
@@ -900,6 +916,33 @@ class NtscVideoProcessor(private val context: Context) {
         val bottom = max(smearDown[bottomLeftAt + channel], smearUp[bottomLeftAt + channel]) * (1f - fx) +
             max(smearDown[bottomRightAt + channel], smearUp[bottomRightAt + channel]) * fx
         return top * (1f - fy) + bottom * fy
+    }
+
+    private fun sampleHighlightHalo(
+        rgba: ByteArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int
+    ): Float {
+        var total = 0f
+        var atOffset = 0
+        while (atOffset < smearHaloOffsets.size) {
+            val sampleX = (x + smearHaloOffsets[atOffset]).coerceIn(0, width - 1)
+            val sampleY = (y + smearHaloOffsets[atOffset + 1]).coerceIn(0, height - 1)
+            val at = (sampleY * width + sampleX) * 4
+            val red = (rgba[at].toInt() and 255) / 255f
+            val green = (rgba[at + 1].toInt() and 255) / 255f
+            val blue = (rgba[at + 2].toInt() and 255) / 255f
+            total += max(red, max(green, blue))
+            atOffset += 2
+        }
+        return total / 8f
+    }
+
+    private fun smoothStep(edge0: Float, edge1: Float, value: Float): Float {
+        val t = ((value - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 
     private fun applyFishEyeRgba(rgba: ByteArray, width: Int, height: Int, strength: Float) {
