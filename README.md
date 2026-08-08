@@ -20,7 +20,7 @@ de filmadora e processamento NTSC-RS totalmente offline.
   vezes quiser e use o movimento gravado no render.
 - Correção opcional de temperatura, saturação, contraste, brilho e matiz.
 - Fish-eye opcional com intensidade ajustável.
-- CCD Vertical Smear opcional com detecção restrita a luzes saturadas, faixas finas e cor automática baseada na fonte, aplicado antes do NTSC-RS.
+- CCD Vertical Smear opcional com detecção de halo e contraste para priorizar lâmpadas pontuais, faixas finas e cor automática baseada na fonte, aplicado antes do NTSC-RS.
 - Data e horário opcionais no estilo de filmadora, degradados pelo próprio NTSC-RS.
 - MP4 progressivo compatível ou MPEG-2 NTSC 480i verdadeiro.
 
@@ -36,3 +36,5 @@ o exportador FFmpeg ARM64 e o APK, disponibilizado no artefato
 
 O APK atual é destinado a celulares Android ARM64 com Android 8 ou superior. O
 Galaxy A06 é o aparelho principal de teste.
+
+- Galeria offline integrada para fotos, MP4 e MPG do MotorZoom; arquivos MPG 480i recebem uma prévia MP4 temporária sem alterar o original.
