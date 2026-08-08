@@ -3,6 +3,7 @@ package app.motorzoom
 import android.Manifest
 import android.app.Dialog
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
@@ -167,6 +168,9 @@ class MainActivity : AppCompatActivity() {
         binding.recordButton.setOnClickListener { toggleRecording() }
         binding.photoButton.setOnClickListener { takePhoto() }
         binding.ntscButton.setOnClickListener { showProcessorMenu() }
+        binding.galleryButton.setOnClickListener {
+            startActivity(Intent(this, GalleryActivity::class.java))
+        }
         binding.modeButton.setOnClickListener {
             Toast.makeText(
                 this,
@@ -458,16 +462,16 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(ccdSmearPanel)
         val ccdThreshold = addSlider(
-            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.985f
+            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.995f
         ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdKnee = addSlider(
-            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.015f
+            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.005f
         ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdLength = addSlider(
-            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.65f
+            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.35f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         val ccdIntensity = addSlider(
-            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.15f
+            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.06f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearPanel.addView(TextView(this).apply { text = "Cor da faixa" })
         val ccdTint = Spinner(this).apply {
@@ -480,7 +484,7 @@ class MainActivity : AppCompatActivity() {
         }
         ccdSmearPanel.addView(ccdTint)
         val ccdFlicker = addSlider(
-            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.02f
+            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearEnabled.setOnCheckedChangeListener { _, checked ->
             ccdSmearPanel.visibility = if (checked) View.VISIBLE else View.GONE
@@ -714,16 +718,16 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(ccdSmearPanel)
         val ccdThreshold = addSlider(
-            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.985f
+            ccdSmearPanel, "Limiar de saturação", 0.95f, 0.995f, 0.005f, 0.995f
         ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdKnee = addSlider(
-            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.015f
+            ccdSmearPanel, "Transição", 0.005f, 0.05f, 0.005f, 0.005f
         ) { String.format(Locale.US, "%.1f%%", it * 100f) }
         val ccdLength = addSlider(
-            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.65f
+            ccdSmearPanel, "Comprimento", 0f, 1f, 0.01f, 0.35f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         val ccdIntensity = addSlider(
-            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.15f
+            ccdSmearPanel, "Intensidade", 0f, 0.6f, 0.01f, 0.06f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearPanel.addView(TextView(this).apply { text = "Cor da faixa" })
         val ccdTint = Spinner(this).apply {
@@ -736,7 +740,7 @@ class MainActivity : AppCompatActivity() {
         }
         ccdSmearPanel.addView(ccdTint)
         val ccdFlicker = addSlider(
-            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0.02f
+            ccdSmearPanel, "Instabilidade", 0f, 0.3f, 0.01f, 0f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         ccdSmearEnabled.setOnCheckedChangeListener { _, checked ->
             ccdSmearPanel.visibility = if (checked) View.VISIBLE else View.GONE
