@@ -8,7 +8,7 @@ de filmadora e processamento NTSC-RS totalmente offline.
 - Segure **T** ou **W** para controlar o zoom motorizado.
 - Ajuste a velocidade entre `0,10×/s` e `1,50×/s`.
 - Grave vídeos e tire fotos em 4:3 com a câmera traseira.
-- O rocker ao vivo usa o controlador temporizado e coalescido da versão 0.9,
+- O rocker ao vivo envia continuamente a posição mais recente à câmera,
   ajustado para o Galaxy A06.
 
 ## Processamento offline
@@ -20,6 +20,7 @@ de filmadora e processamento NTSC-RS totalmente offline.
   vezes quiser e use o movimento gravado no render.
 - Correção opcional de temperatura, saturação, contraste, brilho e matiz.
 - Fish-eye opcional com intensidade ajustável.
+- CCD Vertical Smear opcional para luzes saturadas, aplicado antes do NTSC-RS.
 - Data e horário opcionais no estilo de filmadora, degradados pelo próprio NTSC-RS.
 - MP4 progressivo compatível ou MPEG-2 NTSC 480i verdadeiro.
 
