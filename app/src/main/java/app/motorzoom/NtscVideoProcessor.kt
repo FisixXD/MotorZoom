@@ -3,6 +3,12 @@ package app.motorzoom
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ImageDecoder
+import android.graphics.Paint
+import android.graphics.Rect
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -115,6 +121,100 @@ class NtscVideoProcessor(private val context: Context) {
             throw error
         } finally {
             extractor.release()
+        }
+    }
+
+    /** Processes a still image through the same native ntsc-rs core and saves lossless PNG. */
+    fun processPhoto(
+        input: Uri,
+        preset: String,
+        visual: VisualSettings
+    ): Uri {
+        check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
+        val source = if (Build.VERSION.SDK_INT >= 28) {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(resolver, input)) { decoder, _, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        } else {
+            resolver.openInputStream(input)!!.use { BitmapFactory.decodeStream(it) }
+                ?: error("Não foi possível abrir a foto")
+        }
+
+        val targetRatio = WIDTH.toFloat() / HEIGHT
+        val sourceRatio = source.width.toFloat() / source.height
+        val cropWidth = if (sourceRatio > targetRatio) {
+            (source.height * targetRatio).roundToInt()
+        } else source.width
+        val cropHeight = if (sourceRatio < targetRatio) {
+            (source.width / targetRatio).roundToInt()
+        } else source.height
+        val sourceRect = Rect(
+            (source.width - cropWidth) / 2,
+            (source.height - cropHeight) / 2,
+            (source.width + cropWidth) / 2,
+            (source.height + cropHeight) / 2
+        )
+        val bitmap = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).drawBitmap(
+            source,
+            sourceRect,
+            Rect(0, 0, WIDTH, HEIGHT),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        )
+        if (source !== bitmap) source.recycle()
+
+        val colors = IntArray(WIDTH * HEIGHT)
+        bitmap.getPixels(colors, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+        val rgba = ByteArray(WIDTH * HEIGHT * 4)
+        for (index in colors.indices) {
+            val color = colors[index]
+            val at = index * 4
+            rgba[at] = (color shr 16).toByte()
+            rgba[at + 1] = (color shr 8).toByte()
+            rgba[at + 2] = color.toByte()
+            rgba[at + 3] = 0xff.toByte()
+        }
+        if (visual.fishEyeEnabled) {
+            applyFishEyeRgba(rgba, WIDTH, HEIGHT, visual.fishEyeStrength)
+        }
+        applyVisualEffects(rgba, WIDTH, HEIGHT, 0L, visual)
+        check(NativeNtsc.processRgba(rgba, WIDTH, HEIGHT, 0)) { "Falha no núcleo NTSC-RS" }
+        for (index in colors.indices) {
+            val at = index * 4
+            colors[index] = (0xff shl 24) or
+                ((rgba[at].toInt() and 255) shl 16) or
+                ((rgba[at + 1].toInt() and 255) shl 8) or
+                (rgba[at + 2].toInt() and 255)
+        }
+        bitmap.setPixels(colors, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "MotorZoom_NTSC_${System.currentTimeMillis()}.png")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/MotorZoom")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val output = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: error("Não foi possível criar a imagem de saída")
+        try {
+            resolver.openOutputStream(output, "w")!!.use { stream ->
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                    "Não foi possível salvar o PNG"
+                }
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                resolver.update(output, ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }, null, null)
+            }
+            return output
+        } catch (error: Throwable) {
+            resolver.delete(output, null, null)
+            throw error
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -606,6 +706,33 @@ class NtscVideoProcessor(private val context: Context) {
             val instant = settings.overlayStartEpochMs + timeUs / 1_000L
             val text = SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", Locale.US).format(Date(instant))
             drawTimestamp(rgba, width, height, text)
+        }
+    }
+
+    private fun applyFishEyeRgba(rgba: ByteArray, width: Int, height: Int, strength: Float) {
+        val source = rgba.copyOf()
+        val amount = strength.coerceIn(0f, 0.8f)
+        for (y in 0 until height) for (x in 0 until width) {
+            val normalizedX = ((x + 0.5f) / width) * 2f - 1f
+            val normalizedY = ((y + 0.5f) / height) * 2f - 1f
+            val radiusSquared = normalizedX * normalizedX + normalizedY * normalizedY
+            val radial = (1f + amount * radiusSquared) / (1f + amount)
+            val sourceX = normalizedX * radial
+            val sourceY = normalizedY * radial
+            val destination = (y * width + x) * 4
+            if (sourceX !in -1f..1f || sourceY !in -1f..1f) {
+                rgba[destination] = 0
+                rgba[destination + 1] = 0
+                rgba[destination + 2] = 0
+                rgba[destination + 3] = 0xff.toByte()
+            } else {
+                val sx = (((sourceX + 1f) * 0.5f * (width - 1)).roundToInt())
+                    .coerceIn(0, width - 1)
+                val sy = (((sourceY + 1f) * 0.5f * (height - 1)).roundToInt())
+                    .coerceIn(0, height - 1)
+                val origin = (sy * width + sx) * 4
+                source.copyInto(rgba, destination, origin, origin + 4)
+            }
         }
     }
 
