@@ -82,7 +82,15 @@ class MainActivity : AppCompatActivity() {
     private var presetName = "Padrão"
 
     private val videoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) showPostZoomDialog(uri)
+        if (uri != null) {
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            showPostZoomDialog(uri)
+        }
     }
 
     private val photoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -134,6 +142,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -153,7 +165,19 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         setupControls()
 
-        if (hasCameraPermission()) startCamera() else requestPermissions()
+        if (hasCameraPermission()) {
+            startCamera()
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            requestPermissions()
+        }
     }
 
     private fun setupControls() {
@@ -1237,42 +1261,36 @@ class MainActivity : AppCompatActivity() {
         visual: NtscVideoProcessor.VisualSettings,
         trueInterlaced: Boolean
     ) {
-        binding.ntscButton.isEnabled = false
-        binding.ntscButton.text = "0%"
-        cameraExecutor.execute {
-            try {
-                NtscVideoProcessor(applicationContext).process(
-                    uri,
-                    presetJson,
-                    motorZoom,
-                    visual,
-                    trueInterlaced
-                ) { percent ->
-                    runOnUiThread { binding.ntscButton.text = "$percent%" }
-                }
-                runOnUiThread {
-                    binding.ntscButton.isEnabled = true
-                    binding.ntscButton.text = getString(R.string.ntsc_rs)
-                    val format = if (trueInterlaced) "NTSC 480i (.mpg)" else "MP4 progressivo"
-                    Toast.makeText(this, "$format salvo em Movies/MotorZoom", Toast.LENGTH_LONG).show()
-                }
-            } catch (error: Throwable) {
-                runOnUiThread {
-                    binding.ntscButton.isEnabled = true
-                    binding.ntscButton.text = getString(R.string.ntsc_rs)
-                    val message = "Falha ao processar:\n\n${error.message ?: error.javaClass.simpleName}"
-                    androidx.appcompat.app.AlertDialog.Builder(this)
-                        .setTitle("Erro no processamento")
-                        .setMessage(message)
-                        .setPositiveButton("Fechar", null)
-                        .setNeutralButton("Copiar erro") { _, _ ->
-                            val clipboard = getSystemService(android.content.ClipboardManager::class.java)
-                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("MotorZoom", message))
-                            Toast.makeText(this, "Erro copiado", Toast.LENGTH_SHORT).show()
-                        }
-                        .show()
-                }
+        try {
+            val started = ProcessingService.start(
+                applicationContext,
+                uri,
+                presetJson,
+                motorZoom,
+                visual,
+                trueInterlaced
+            )
+            if (started) {
+                val format = if (trueInterlaced) "NTSC 480i (.mpg)" else "MP4 progressivo"
+                Toast.makeText(
+                    this,
+                    "$format iniciado em segundo plano • acompanhe pela notificação",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Já existe um vídeo sendo processado",
+                    Toast.LENGTH_LONG
+                ).show()
             }
+        } catch (error: Throwable) {
+            val message = "Falha ao iniciar processamento:\n\n${error.message ?: error.javaClass.simpleName}"
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Erro no processamento")
+                .setMessage(message)
+                .setPositiveButton("Fechar", null)
+                .show()
         }
     }
 
@@ -1280,7 +1298,14 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun requestPermissions() {
-        permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        val permissions = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        )
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissions += Manifest.permission.POST_NOTIFICATIONS
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
     }
 
     private fun hideSystemUi() {
