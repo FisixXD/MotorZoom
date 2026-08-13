@@ -38,3 +38,6 @@ O APK atual é destinado a celulares Android ARM64 com Android 8 ou superior. O
 Galaxy A06 é o aparelho principal de teste.
 
 - Galeria offline integrada para fotos, MP4 e MPG do MotorZoom; arquivos MPG 480i recebem uma prévia MP4 temporária sem alterar o original.
+
+- Processamento de vídeo em segundo plano com progresso na notificação; a câmera e a tela podem continuar sendo usadas durante o render.
+- A prévia de MPG usa bob deinterlacing a 59,94 fps para preservar visualmente o movimento dos campos 480i.
