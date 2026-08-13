@@ -331,7 +331,10 @@ class GalleryActivity : AppCompatActivity() {
             "-hide_banner", "-loglevel", "warning", "-y",
             "-i", source.absolutePath,
             "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", "yadif=0:-1:0,scale=640:480",
+            // Bob deinterlacing: one progressive preview frame per field. This
+            // preserves the 59.94-motion look of the original 480i MPG.
+            "-vf", "yadif=1:-1:0,scale=640:480",
+            "-r", "60000/1001",
             "-c:v", "mpeg4", "-q:v", "4",
             "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
