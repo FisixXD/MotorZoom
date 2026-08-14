@@ -50,7 +50,7 @@ class NtscVideoProcessor(private val context: Context) {
         val brightness: Float = 0f,
         val tint: Float = 0f,
         val fishEyeEnabled: Boolean = false,
-        val fishEyeStrength: Float = 0.50f,
+        val fishEyeStrength: Float = 0.35f,
         val ccdSmearEnabled: Boolean = false,
         val ccdSmearThreshold: Float = 0.995f,
         val ccdSmearKnee: Float = 0.005f,
@@ -60,6 +60,16 @@ class NtscVideoProcessor(private val context: Context) {
         val ccdSmearFlicker: Float = 0f,
         val overlayEnabled: Boolean = false,
         val overlayStartEpochMs: Long = 0L
+    )
+
+    data class AudioSettings(
+        val enabled: Boolean = false,
+        val gainDb: Float = 0f,
+        val compressor: Boolean = true,
+        val lowCut: Boolean = false,
+        val saturation: Float = 0f,
+        val noise: Float = 0f,
+        val mono: Boolean = false
     )
 
     companion object {
@@ -75,13 +85,14 @@ class NtscVideoProcessor(private val context: Context) {
         preset: String,
         motorZoom: MotorZoomSettings,
         visual: VisualSettings,
+        audio: AudioSettings,
         trueInterlaced: Boolean,
         progress: (Int) -> Unit
     ): Uri {
         check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
 
         if (trueInterlaced) {
-            return processTrueInterlaced(input, motorZoom, visual, progress)
+            return processTrueInterlaced(input, motorZoom, visual, audio, progress)
         }
 
         val extractor = MediaExtractor()
@@ -109,14 +120,33 @@ class NtscVideoProcessor(private val context: Context) {
         val output = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
             ?: error("Não foi possível criar o vídeo de saída")
 
+        val rawStage = if (audio.enabled && audioTrack != null) {
+            File.createTempFile("motorzoom_video_", ".mp4", context.cacheDir)
+        } else null
+        val audioStage = if (rawStage != null) {
+            File.createTempFile("motorzoom_audio_", ".mp4", context.cacheDir)
+        } else null
         try {
-            resolver.openFileDescriptor(output, "rw")!!.use { descriptor ->
-                val muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            if (rawStage != null && audioStage != null) {
+                val muxer = MediaMuxer(rawStage.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                 if (rotation != 0) muxer.setOrientationHint(rotation)
                 transcode(
                     extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
                     muxer, durationUs, motorZoom, visual, progress
                 )
+                applyAudioEffects(rawStage, audioStage, audio)
+                resolver.openOutputStream(output, "w")!!.use { destination ->
+                    audioStage.inputStream().use { source -> source.copyTo(destination) }
+                }
+            } else {
+                resolver.openFileDescriptor(output, "rw")!!.use { descriptor ->
+                    val muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    if (rotation != 0) muxer.setOrientationHint(rotation)
+                    transcode(
+                        extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
+                        muxer, durationUs, motorZoom, visual, progress
+                    )
+                }
             }
             if (Build.VERSION.SDK_INT >= 29) {
                 resolver.update(output, ContentValues().apply {
@@ -126,6 +156,59 @@ class NtscVideoProcessor(private val context: Context) {
             return output
         } catch (error: Throwable) {
             resolver.delete(output, null, null)
+            throw error
+        } finally {
+            extractor.release()
+            rawStage?.delete()
+            audioStage?.delete()
+        }
+    }
+
+    fun processPreview(
+        input: Uri,
+        preset: String,
+        motorZoom: MotorZoomSettings,
+        visual: VisualSettings,
+        audio: AudioSettings,
+        progress: (Int) -> Unit
+    ): File {
+        check(NativeNtsc.configure(preset)) { "Preset incompatível com esta versão do NTSC-RS" }
+        val extractor = MediaExtractor()
+        resolver.openFileDescriptor(input, "r")!!.use { extractor.setDataSource(it.fileDescriptor) }
+        val videoTrack = (0 until extractor.trackCount).firstOrNull {
+            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+        } ?: error("O arquivo não contém vídeo")
+        val sourceFormat = extractor.getTrackFormat(videoTrack)
+        val audioTrack = (0 until extractor.trackCount).firstOrNull {
+            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+        }
+        val sourceMime = sourceFormat.getString(MediaFormat.KEY_MIME)!!
+        val previewDuration = min(3_000_000L, sourceFormat.getLong(MediaFormat.KEY_DURATION))
+        extractor.selectTrack(videoTrack)
+        context.cacheDir.listFiles { file -> file.name.startsWith("motorzoom_preview_") }
+            ?.filter { System.currentTimeMillis() - it.lastModified() > 3_600_000L }
+            ?.forEach { it.delete() }
+        val raw = File.createTempFile("motorzoom_preview_raw_", ".mp4", context.cacheDir)
+        val result = File.createTempFile("motorzoom_preview_", ".mp4", context.cacheDir)
+        try {
+            val muxer = MediaMuxer(raw.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            transcode(
+                extractor, videoTrack, audioTrack, sourceMime, sourceFormat,
+                muxer, previewDuration, motorZoom, visual, progress, previewDuration
+            )
+            if (audio.enabled && audioTrack != null) {
+                applyAudioEffects(raw, result, audio)
+                raw.delete()
+            } else {
+                if (!raw.renameTo(result)) {
+                    raw.inputStream().use { source -> result.outputStream().use { source.copyTo(it) } }
+                    raw.delete()
+                }
+            }
+            return result
+        } catch (error: Throwable) {
+            raw.delete()
+            result.delete()
             throw error
         } finally {
             extractor.release()
@@ -235,6 +318,7 @@ class NtscVideoProcessor(private val context: Context) {
         input: Uri,
         motorZoom: MotorZoomSettings,
         visual: VisualSettings,
+        audio: AudioSettings,
         progress: (Int) -> Unit
     ): Uri {
         val extractor = MediaExtractor()
@@ -249,6 +333,9 @@ class NtscVideoProcessor(private val context: Context) {
         }
         val durationUs = sourceFormat.getLong(MediaFormat.KEY_DURATION)
         val sourceMime = sourceFormat.getString(MediaFormat.KEY_MIME)!!
+        val hasAudio = (0 until extractor.trackCount).any {
+            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+        }
         extractor.selectTrack(videoTrack)
 
         val sourceCopy = File.createTempFile("motorzoom_source_", ".mp4", context.cacheDir)
@@ -259,21 +346,47 @@ class NtscVideoProcessor(private val context: Context) {
             }
             val ffmpeg = File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so")
             check(ffmpeg.canExecute()) { "Exportador 480i não foi incluído nesta compilação" }
-            val command = listOf(
+            val command = mutableListOf(
                 ffmpeg.absolutePath,
                 "-hide_banner", "-loglevel", "warning", "-y",
                 "-thread_queue_size", "64",
                 "-f", "rawvideo", "-pixel_format", "rgba",
                 "-video_size", "${INTERLACED_WIDTH}x${INTERLACED_HEIGHT}",
                 "-framerate", "30000/1001", "-i", "pipe:0",
-                "-i", sourceCopy.absolutePath,
-                "-map", "0:v:0", "-map", "1:a:0?",
+                "-i", sourceCopy.absolutePath
+            )
+            if (audio.enabled && audio.noise > 0f && hasAudio) {
+                command += listOf(
+                    "-f", "lavfi", "-i",
+                    "anoisesrc=color=white:amplitude=${audio.noise.coerceIn(0f, 0.08f)}:sample_rate=48000"
+                )
+            }
+            command += listOf("-map", "0:v:0")
+            if (hasAudio) {
+                if (audio.enabled && audio.noise > 0f) {
+                    val clean = audioFilter(audio, includeLimiter = true)
+                    command += listOf(
+                        "-filter_complex",
+                        "[1:a]$clean[clean];[clean][2:a]amix=inputs=2:duration=first:weights=1 1[aout]",
+                        "-map", "[aout]"
+                    )
+                } else {
+                    command += listOf("-map", "1:a:0?")
+                    if (audio.enabled) command += listOf("-af", audioFilter(audio, includeLimiter = true))
+                }
+            }
+            command += listOf(
                 "-c:v", "mpeg2video", "-pix_fmt", "yuv420p",
                 "-flags", "+ildct+ilme", "-top", "1",
                 "-aspect", "4:3", "-r", "30000/1001",
                 "-b:v", "8000k", "-maxrate", "9000k", "-bufsize", "1835008",
                 "-g", "15",
-                "-c:a", "mp2", "-b:a", "192k", "-ar", "48000",
+                "-c:a", "mp2", "-b:a", "192k", "-ar", "48000"
+            )
+            if (audio.enabled && hasAudio) {
+                command += listOf("-ac", if (audio.mono) "1" else "2")
+            }
+            command += listOf(
                 "-f", "mpeg", encoded.absolutePath
             )
             val process = ProcessBuilder(command).redirectErrorStream(true).start()
@@ -439,7 +552,8 @@ class NtscVideoProcessor(private val context: Context) {
         durationUs: Long,
         motorZoom: MotorZoomSettings,
         visual: VisualSettings,
-        progress: (Int) -> Unit
+        progress: (Int) -> Unit,
+        maxDurationUs: Long? = null
     ) {
         val decoder = MediaCodec.createDecoderByType(sourceMime)
         val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -481,7 +595,7 @@ class NtscVideoProcessor(private val context: Context) {
                     if (index >= 0) {
                         val buffer = decoder.getInputBuffer(index)!!
                         val size = extractor.readSampleData(buffer, 0)
-                        if (size < 0) {
+                        if (size < 0 || (maxDurationUs != null && extractor.sampleTime >= maxDurationUs)) {
                             decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
@@ -516,7 +630,7 @@ class NtscVideoProcessor(private val context: Context) {
                                 "Falha no núcleo NTSC-RS"
                             }
                             queueEncoder(encoder, rgba, decoderInfo.presentationTimeUs, encoderColor)
-                            progress(((decoderInfo.presentationTimeUs * 100L) / durationUs.coerceAtLeast(1)).toInt().coerceIn(0, 99))
+                            progress(((timelineUs * 100L) / durationUs.coerceAtLeast(1)).toInt().coerceIn(0, 99))
                         }
                         decoderDone = decoderInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                         decoder.releaseOutputBuffer(index, false)
@@ -552,7 +666,7 @@ class NtscVideoProcessor(private val context: Context) {
                 }
             }
             if (audioSourceTrack != null && audioMuxTrack >= 0) {
-                copyAudio(extractor, videoSourceTrack, audioSourceTrack, muxer, audioMuxTrack)
+                copyAudio(extractor, videoSourceTrack, audioSourceTrack, muxer, audioMuxTrack, maxDurationUs)
             }
             progress(100)
         } finally {
@@ -568,7 +682,8 @@ class NtscVideoProcessor(private val context: Context) {
         videoTrack: Int,
         audioTrack: Int,
         muxer: MediaMuxer,
-        muxTrack: Int
+        muxTrack: Int,
+        maxDurationUs: Long? = null
     ) {
         extractor.unselectTrack(videoTrack)
         extractor.selectTrack(audioTrack)
@@ -579,9 +694,65 @@ class NtscVideoProcessor(private val context: Context) {
             buffer.clear()
             val size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
+            if (maxDurationUs != null && extractor.sampleTime >= maxDurationUs) break
             info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
             muxer.writeSampleData(muxTrack, buffer, info)
             extractor.advance()
+        }
+    }
+
+    private fun audioFilter(settings: AudioSettings, includeLimiter: Boolean): String {
+        val filters = mutableListOf<String>()
+        if (settings.lowCut) filters += "highpass=f=80"
+        if (settings.gainDb != 0f) {
+            filters += "volume=${settings.gainDb.coerceIn(-12f, 12f)}dB"
+        }
+        if (settings.compressor) {
+            filters += "acompressor=threshold=0.16:ratio=4:attack=8:release=120:makeup=1.7"
+        }
+        if (settings.saturation > 0f) {
+            val threshold = 1f - settings.saturation.coerceIn(0f, 1f) * 0.45f
+            filters += "asoftclip=type=tanh:threshold=$threshold:output=0.92"
+        }
+        if (includeLimiter) filters += "alimiter=limit=0.95"
+        return filters.ifEmpty { listOf("anull") }.joinToString(",")
+    }
+
+    private fun applyAudioEffects(source: File, destination: File, settings: AudioSettings) {
+        val ffmpeg = File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so")
+        check(ffmpeg.canExecute()) { "Processador de áudio não foi incluído nesta compilação" }
+        val command = mutableListOf(
+            ffmpeg.absolutePath,
+            "-hide_banner", "-loglevel", "warning", "-y",
+            "-i", source.absolutePath
+        )
+        if (settings.noise > 0f) {
+            command += listOf(
+                "-f", "lavfi", "-i",
+                "anoisesrc=color=white:amplitude=${settings.noise.coerceIn(0f, 0.08f)}:sample_rate=48000",
+                "-filter_complex",
+                "[0:a]${audioFilter(settings, includeLimiter = false)}[clean];" +
+                    "[clean][1:a]amix=inputs=2:duration=first:weights=1 1,alimiter=limit=0.95[aout]",
+                "-map", "0:v:0", "-map", "[aout]"
+            )
+        } else {
+            command += listOf(
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-af", audioFilter(settings, includeLimiter = true)
+            )
+        }
+        command += listOf(
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-ac", if (settings.mono) "1" else "2",
+            "-movflags", "+faststart",
+            destination.absolutePath
+        )
+        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val log = process.inputStream.bufferedReader().readText()
+        val exit = process.waitFor()
+        check(exit == 0 && destination.length() > 0L) {
+            "FFmpeg de áudio encerrou com código $exit: ${log.takeLast(900)}"
         }
     }
 
