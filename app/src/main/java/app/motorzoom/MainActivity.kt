@@ -105,12 +105,15 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             try {
                 presetJson = contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
-                check(presetJson.contains("\"version\""))
+                presetJson = NativeNtsc.normalizePreset(presetJson)
+                    ?: error("Preset incompatível")
                 presetName = uri.lastPathSegment?.substringAfterLast('/') ?: "Preset importado"
+                PresetStore(this).save(presetName, presetJson)
                 Toast.makeText(this, "Preset carregado: $presetName", Toast.LENGTH_LONG).show()
             } catch (_: Exception) {
-                presetJson = ""
-                presetName = "Padrão"
+                val fallback = PresetStore(this).defaultPreset()
+                presetJson = fallback.json
+                presetName = fallback.name
                 Toast.makeText(this, "Esse arquivo não parece ser um preset NTSC-RS", Toast.LENGTH_LONG).show()
             }
         }
@@ -167,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         hideSystemUi()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        loadPersistentSettings()
         setupControls()
 
         if (hasCameraPermission()) {
@@ -184,6 +188,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::binding.isInitialized) loadPersistentSettings()
+    }
+
+    private fun loadPersistentSettings() {
+        val selected = PresetStore(this).current()
+        presetJson = selected.json
+        presetName = selected.name
+        val speed = getSharedPreferences("motorzoom_settings", MODE_PRIVATE)
+            .getFloat("zoom_speed", 0.35f).coerceIn(0.10f, 1.50f)
+        zoomUnitsPerSecond = speed
+        binding.speedSlider.value = speed
+        binding.speedLabel.text = String.format(Locale.US, "Velocidade: %.2f×/s", speed)
+    }
+
     private fun setupControls() {
         installRocker(binding.teleButton, 1)
         installRocker(binding.wideButton, -1)
@@ -191,6 +211,8 @@ class MainActivity : AppCompatActivity() {
         binding.speedSlider.addOnChangeListener { _, value, _ ->
             zoomUnitsPerSecond = value
             binding.speedLabel.text = String.format(Locale.US, "Velocidade: %.2f×/s", value)
+            getSharedPreferences("motorzoom_settings", MODE_PRIVATE)
+                .edit().putFloat("zoom_speed", value).apply()
         }
 
         binding.recordButton.setOnClickListener { toggleRecording() }
@@ -416,11 +438,12 @@ class MainActivity : AppCompatActivity() {
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS • $presetName")
-            .setItems(arrayOf("Processar vídeo", "Processar foto", "Importar preset")) { _, choice ->
+            .setItems(arrayOf("Processar vídeo", "Processar foto", "Biblioteca e editor de presets", "Importar preset")) { _, choice ->
                 when (choice) {
                     0 -> videoPicker.launch(arrayOf("video/*"))
                     1 -> photoPicker.launch(arrayOf("image/*"))
-                    2 -> presetPicker.launch(arrayOf("application/json", "text/plain"))
+                    2 -> startActivity(Intent(this, PresetManagerActivity::class.java))
+                    3 -> presetPicker.launch(arrayOf("application/json", "text/plain"))
                 }
             }
             .show()
