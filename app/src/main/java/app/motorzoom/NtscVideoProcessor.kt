@@ -50,7 +50,7 @@ class NtscVideoProcessor(private val context: Context) {
         val brightness: Float = 0f,
         val tint: Float = 0f,
         val fishEyeEnabled: Boolean = false,
-        val fishEyeStrength: Float = 0.35f,
+        val fishEyeStrength: Float = 0.50f,
         val ccdSmearEnabled: Boolean = false,
         val ccdSmearThreshold: Float = 0.995f,
         val ccdSmearKnee: Float = 0.005f,
@@ -673,12 +673,8 @@ class NtscVideoProcessor(private val context: Context) {
             for (dx in 0 until outWidth) {
                 val normalizedX = ((dx + 0.5f) / outWidth) * 2f - 1f
                 val normalizedY = ((dy + 0.5f) / outHeight) * 2f - 1f
-                val radiusSquared = normalizedX * normalizedX + normalizedY * normalizedY
-                val radial = if (fishEyeStrength > 0f) {
-                    (1f + fishEyeStrength * radiusSquared) / (1f + fishEyeStrength)
-                } else 1f
-                val sourceX = normalizedX * radial
-                val sourceY = normalizedY * radial
+                val sourceX = normalizedX
+                val sourceY = normalizedY
                 val at = (dy * outWidth + dx) * 4
                 if (sourceX !in -1f..1f || sourceY !in -1f..1f) {
                     output[at] = 0
@@ -700,6 +696,12 @@ class NtscVideoProcessor(private val context: Context) {
                 output[at] = r.toByte(); output[at + 1] = g.toByte()
                 output[at + 2] = b.toByte(); output[at + 3] = 0xff.toByte()
             }
+        }
+        // Use exactly the same optical lens model for decoded video and photos.
+        // Previously video had a separate polynomial warp, which is why its
+        // border looked like a rounded rectangle while photos looked different.
+        if (fishEyeStrength > 0f) {
+            applyFishEyeRgba(output, outWidth, outHeight, fishEyeStrength)
         }
         return output
     }
@@ -966,16 +968,22 @@ class NtscVideoProcessor(private val context: Context) {
         val source = rgba.copyOf()
         val amount = strength.coerceIn(0f, 0.8f)
         val normalizedAmount = amount / 0.8f
-        val lensRadius = 1.14f - normalizedAmount * 0.13f
-        val feather = 0.045f
-        val chromaticShift = 0.004f + normalizedAmount * 0.012f
+        // A circular full-frame skate lens touches the middle of all four edges.
+        // The old radius above 1.0 left long flat edges and looked like a curved
+        // television screen rather than a real fisheye attachment.
+        val lensRadius = 1.005f
+        val feather = 0.014f
+        val projectionAngle = 0.90f + normalizedAmount * 0.38f
+        val projectionScale = kotlin.math.tan(projectionAngle.toDouble()).toFloat()
+        val chromaticShift = 0.0035f + normalizedAmount * 0.010f
         for (y in 0 until height) for (x in 0 until width) {
             val normalizedX = ((x + 0.5f) / width) * 2f - 1f
             val normalizedY = ((y + 0.5f) / height) * 2f - 1f
             val radiusSquared = normalizedX * normalizedX + normalizedY * normalizedY
             val radius = kotlin.math.sqrt(radiusSquared)
             val lensMask = 1f - smoothStep(lensRadius - feather, lensRadius, radius)
-            val vignette = 1f - 0.24f * smoothStep(lensRadius * 0.68f, lensRadius, radius)
+            val lensRadiusNormalized = (radius / lensRadius).coerceIn(0f, 1f)
+            val vignette = 1f - 0.15f * smoothStep(0.72f, 1f, lensRadiusNormalized)
             val destination = (y * width + x) * 4
             if (lensMask <= 0f) {
                 rgba[destination] = 0
@@ -983,11 +991,18 @@ class NtscVideoProcessor(private val context: Context) {
                 rgba[destination + 2] = 0
                 rgba[destination + 3] = 0xff.toByte()
             } else {
-                // Inverse full-frame fisheye mapping. The centre is expanded and
-                // straight lines bow progressively toward the rounded lens edge.
-                val radial = 1f - amount * 0.62f * (1f - radiusSquared.coerceAtMost(1f))
-                val redRadial = radial * (1f + chromaticShift * radiusSquared)
-                val blueRadial = radial * (1f - chromaticShift * radiusSquared)
+                // Rectilinear-to-equidistant projection. Unlike the old polynomial
+                // warp, this creates the aggressive optical barrel curvature seen
+                // in classic Century/Opteka skate-video fisheye adapters.
+                val sourceRadius = if (radius < 0.0001f) 0f else {
+                    kotlin.math.tan(
+                        (lensRadiusNormalized * projectionAngle).toDouble()
+                    ).toFloat() / projectionScale
+                }
+                val radial = if (radius < 0.0001f) 1f else sourceRadius / radius
+                val edgePower = lensRadiusNormalized * lensRadiusNormalized * lensRadiusNormalized
+                val redRadial = radial * (1f + chromaticShift * edgePower)
+                val blueRadial = radial * (1f - chromaticShift * edgePower)
                 val red = sampleFishEyeChannel(
                     source, width, height, normalizedX * redRadial, normalizedY * redRadial, 0
                 )
