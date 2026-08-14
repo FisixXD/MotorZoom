@@ -517,10 +517,10 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(fishEyePanel)
         val fishEyeStrength = addSlider(
-            fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.50f
+            fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         fishEyePanel.addView(TextView(this).apply {
-            text = "Inclui borda arredondada da lente, vinheta e leve aberração cromática."
+            text = "Estilo skate/VX: curvatura moderada e preto apenas nos cantos."
         })
         fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
             fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
@@ -791,11 +791,11 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         content.addView(fishEyePanel)
-        val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.50f) {
+        val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f) {
             String.format(Locale.US, "%.0f%%", it * 100f)
         }
         fishEyePanel.addView(TextView(this).apply {
-            text = "Inclui borda arredondada da lente, vinheta e leve aberração cromática."
+            text = "Estilo skate/VX: curvatura moderada e preto apenas nos cantos."
         })
         fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
             fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
