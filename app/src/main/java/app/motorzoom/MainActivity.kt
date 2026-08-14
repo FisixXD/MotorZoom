@@ -494,7 +494,7 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(fishEyePanel)
         val fishEyeStrength = addSlider(
-            fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f
+            fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.50f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
         fishEyePanel.addView(TextView(this).apply {
             text = "Inclui borda arredondada da lente, vinheta e leve aberração cromática."
@@ -768,7 +768,7 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         content.addView(fishEyePanel)
-        val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f) {
+        val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.50f) {
             String.format(Locale.US, "%.0f%%", it * 100f)
         }
         fishEyePanel.addView(TextView(this).apply {
