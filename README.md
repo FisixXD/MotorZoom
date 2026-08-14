@@ -14,6 +14,13 @@ de filmadora e processamento NTSC-RS totalmente offline.
 ## Processamento offline
 
 - Importa presets `.json` do NTSC-RS para PC.
+- Biblioteca e editor de presets no próprio app: criar, editar todos os campos,
+  validar no núcleo nativo, salvar, selecionar, duplicar, renomear, excluir,
+  importar e exportar.
+- Perfis iniciais: VHS doméstico, Video8/Hi8, MiniDV, Skate VX, fita
+  desgastada, filmadora noturna e CCD urbano.
+- O último preset selecionado e a velocidade do rocker são lembrados ao reabrir
+  o aplicativo.
 - Usa o núcleo oficial `ntsc-rs` nativamente, sem navegador ou internet.
 - Editor de rocker em pós: reproduza um vídeo 60 fps, segure **T/W** quantas
   vezes quiser e use o movimento gravado no render.
