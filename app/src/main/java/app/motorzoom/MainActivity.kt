@@ -438,12 +438,19 @@ class MainActivity : AppCompatActivity() {
     private fun showProcessorMenu() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("NTSC-RS • $presetName")
-            .setItems(arrayOf("Processar vídeo", "Processar foto", "Biblioteca e editor de presets", "Importar preset")) { _, choice ->
+            .setItems(arrayOf(
+                "Processar vídeo",
+                "Processar foto",
+                "Biblioteca e editor de presets",
+                "Fila e histórico de processamento",
+                "Importar preset"
+            )) { _, choice ->
                 when (choice) {
                     0 -> videoPicker.launch(arrayOf("video/*"))
                     1 -> photoPicker.launch(arrayOf("image/*"))
                     2 -> startActivity(Intent(this, PresetManagerActivity::class.java))
-                    3 -> presetPicker.launch(arrayOf("application/json", "text/plain"))
+                    3 -> startActivity(Intent(this, ProcessingQueueActivity::class.java))
+                    4 -> presetPicker.launch(arrayOf("application/json", "text/plain"))
                 }
             }
             .show()
@@ -1282,13 +1289,7 @@ class MainActivity : AppCompatActivity() {
                 val format = if (trueInterlaced) "NTSC 480i (.mpg)" else "MP4 progressivo"
                 Toast.makeText(
                     this,
-                    "$format iniciado em segundo plano • acompanhe pela notificação",
-                    Toast.LENGTH_LONG
-                ).show()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Já existe um vídeo sendo processado",
+                    "$format adicionado à fila • acompanhe pela notificação",
                     Toast.LENGTH_LONG
                 ).show()
             }
