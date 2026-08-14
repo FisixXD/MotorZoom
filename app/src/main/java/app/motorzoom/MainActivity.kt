@@ -8,6 +8,8 @@ import android.content.pm.PackageManager
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.graphics.Color
 import android.net.Uri
@@ -28,6 +30,8 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
@@ -345,7 +349,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun readRecordedFps(uri: Uri): Float? {
         val retriever = MediaMetadataRetriever()
-        return try {
+        val metadataFps = try {
             retriever.setDataSource(this, uri)
             retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
                 ?.toFloatOrNull()
@@ -353,6 +357,24 @@ class MainActivity : AppCompatActivity() {
             null
         } finally {
             retriever.release()
+        }
+        if (metadataFps != null && metadataFps > 0f) return metadataFps
+
+        val extractor = MediaExtractor()
+        return try {
+            contentResolver.openFileDescriptor(uri, "r")?.use {
+                extractor.setDataSource(it.fileDescriptor)
+            } ?: return null
+            (0 until extractor.trackCount).firstNotNullOfOrNull { track ->
+                val format = extractor.getTrackFormat(track)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true &&
+                    format.containsKey(MediaFormat.KEY_FRAME_RATE)
+                ) format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() else null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            extractor.release()
         }
     }
 
@@ -464,7 +486,7 @@ class MainActivity : AppCompatActivity() {
             colorPanel.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
-        val fishEyeEnabled = CheckBox(this).apply { text = "Lente fish-eye" }
+        val fishEyeEnabled = CheckBox(this).apply { text = "Lente fish-eye realista" }
         content.addView(fishEyeEnabled)
         val fishEyePanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -474,11 +496,14 @@ class MainActivity : AppCompatActivity() {
         val fishEyeStrength = addSlider(
             fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f
         ) { String.format(Locale.US, "%.0f%%", it * 100f) }
+        fishEyePanel.addView(TextView(this).apply {
+            text = "Inclui borda arredondada da lente, vinheta e leve aberração cromática."
+        })
         fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
             fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
-        val ccdSmearEnabled = CheckBox(this).apply { text = "CCD Vertical Smear" }
+        val ccdSmearEnabled = CheckBox(this).apply { text = "CCD Vertical Smear realista" }
         content.addView(ccdSmearEnabled)
         val ccdSmearPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -601,6 +626,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPostZoomDialog(uri: Uri) {
         val durationSeconds = readVideoDurationSeconds(uri)
+        val sourceFps = readRecordedFps(uri)
         val padding = (20 * resources.displayMetrics.density).toInt()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -610,18 +636,36 @@ class MainActivity : AppCompatActivity() {
 
         val info = TextView(this).apply {
             text = if (durationSeconds != null) {
-                "Vídeo: ${String.format(Locale.US, "%.1f", durationSeconds)} s • saída 4:3"
+                val fpsText = sourceFps?.let { " • ${String.format(Locale.US, "%.1f", it)} fps" }.orEmpty()
+                "Vídeo: ${String.format(Locale.US, "%.1f", durationSeconds)} s$fpsText • saída 4:3"
             } else "Saída 4:3 • entrelaçamento conforme o preset"
         }
         content.addView(info)
 
-        val interlacedOutput = CheckBox(this).apply {
-            text = "Saída NTSC 480i real (.mpg)"
+        content.addView(TextView(this).apply { text = "Formato de saída" })
+        val outputGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val progressiveOutput = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "MP4 compatível — qualquer FPS (recomendado)"
             isChecked = true
         }
-        content.addView(interlacedOutput)
+        val interlacedOutput = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "MPG 480i real — somente vídeo 59,94/60 fps"
+            isEnabled = sourceFps == null || sourceFps >= 50f
+        }
+        outputGroup.addView(progressiveOutput)
+        outputGroup.addView(interlacedOutput)
+        content.addView(outputGroup)
         content.addView(TextView(this).apply {
-            text = "Use um vídeo 59,94/60 fps. Cada campo usará um instante diferente, como numa filmadora NTSC."
+            text = when {
+                sourceFps != null && sourceFps < 50f ->
+                    "Este vídeo tem ${String.format(Locale.US, "%.1f", sourceFps)} fps: use MP4. O 480i foi desativado para evitar erro."
+                sourceFps != null ->
+                    "60 fps detectado: o 480i real está disponível e criará 59,94 campos por segundo."
+                else ->
+                    "Não foi possível detectar o FPS. Use 480i apenas se souber que o vídeo é 59,94/60 fps."
+            }
         })
 
         var rockerAutomation: List<NtscVideoProcessor.ZoomKeyframe> = emptyList()
@@ -715,7 +759,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val fishEyeEnabled = CheckBox(this).apply {
-            text = "Lente fish-eye"
+            text = "Lente fish-eye realista"
             isChecked = false
         }
         content.addView(fishEyeEnabled)
@@ -727,12 +771,15 @@ class MainActivity : AppCompatActivity() {
         val fishEyeStrength = addSlider(fishEyePanel, "Intensidade fish-eye", 0.05f, 0.8f, 0.05f, 0.35f) {
             String.format(Locale.US, "%.0f%%", it * 100f)
         }
+        fishEyePanel.addView(TextView(this).apply {
+            text = "Inclui borda arredondada da lente, vinheta e leve aberração cromática."
+        })
         fishEyeEnabled.setOnCheckedChangeListener { _, checked ->
             fishEyePanel.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
         val ccdSmearEnabled = CheckBox(this).apply {
-            text = "CCD Vertical Smear"
+            text = "CCD Vertical Smear realista"
             isChecked = false
         }
         content.addView(ccdSmearEnabled)
@@ -791,74 +838,12 @@ class MainActivity : AppCompatActivity() {
             overlayPanel.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
-        val enabled = CheckBox(this).apply {
-            text = "Aplicar zoom motorizado em pós"
-            isChecked = true
-        }
-        content.addView(enabled)
-
-        fun addNumberField(label: String, initial: String): EditText {
-            content.addView(TextView(this).apply { text = label })
-            return EditText(this).also {
-                it.setText(initial)
-                it.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                it.setSelectAllOnFocus(true)
-                content.addView(it)
-            }
-        }
-
-        val startField = addNumberField("Começar em (segundos)", "0.0")
-        val suggestedDuration = min(5f, durationSeconds ?: 5f).coerceAtLeast(0.5f)
-        val durationField = addNumberField(
-            "Duração do zoom (segundos)",
-            String.format(Locale.US, "%.1f", suggestedDuration)
-        )
-
-        content.addView(TextView(this).apply { text = "Direção" })
-        val direction = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                arrayOf("Aproximar: 1× → zoom final", "Afastar: zoom inicial → 1×")
-            )
-        }
-        content.addView(direction)
-
-        val zoomLabel = TextView(this).apply { text = "Zoom máximo: 2.00×" }
-        content.addView(zoomLabel)
-        val zoomSlider = Slider(this).apply {
-            valueFrom = 1.1f
-            valueTo = 4f
-            stepSize = 0.05f
-            value = 2f
-            addOnChangeListener { _, zoom, _ ->
-                zoomLabel.text = String.format(Locale.US, "Zoom máximo: %.2f×", zoom)
-            }
-        }
-        content.addView(zoomSlider)
-
-        content.addView(TextView(this).apply {
-            text = "Modo Filmadora: velocidade constante com partida e parada suaves de 120 ms."
-        })
-
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Processar vídeo")
             .setView(scroll)
             .setPositiveButton("Processar") { _, _ ->
-                val start = startField.text.toString().replace(',', '.').toFloatOrNull() ?: 0f
-                val duration = durationField.text.toString().replace(',', '.').toFloatOrNull() ?: suggestedDuration
-                val endLimit = durationSeconds ?: Float.MAX_VALUE
-                val safeStart = start.coerceIn(0f, endLimit)
-                val safeDuration = duration.coerceAtLeast(0.1f)
-                    .coerceAtMost((endLimit - safeStart).coerceAtLeast(0.1f))
-                val maximum = zoomSlider.value
-                val zoomIn = direction.selectedItemPosition == 0
                 val settings = NtscVideoProcessor.MotorZoomSettings(
-                    enabled = enabled.isChecked || rockerAutomation.isNotEmpty(),
-                    startUs = (safeStart * 1_000_000f).toLong(),
-                    durationUs = (safeDuration * 1_000_000f).toLong(),
-                    startZoom = if (zoomIn) 1f else maximum,
-                    endZoom = if (zoomIn) maximum else 1f,
+                    enabled = rockerAutomation.isNotEmpty(),
                     keyframes = rockerAutomation
                 )
                 val dateParser = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).apply {
