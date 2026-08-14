@@ -38,6 +38,7 @@ class ProcessingService : Service() {
             preset: String,
             motorZoom: NtscVideoProcessor.MotorZoomSettings,
             visual: NtscVideoProcessor.VisualSettings,
+            audio: NtscVideoProcessor.AudioSettings,
             trueInterlaced: Boolean
         ): Boolean {
             val keyframeTimes = LongArray(motorZoom.keyframes.size) { motorZoom.keyframes[it].timeUs }
@@ -73,6 +74,13 @@ class ProcessingService : Service() {
                 putExtra("ccdSmearFlicker", visual.ccdSmearFlicker)
                 putExtra("overlayEnabled", visual.overlayEnabled)
                 putExtra("overlayStartEpochMs", visual.overlayStartEpochMs)
+                putExtra("audioEnabled", audio.enabled)
+                putExtra("audioGainDb", audio.gainDb)
+                putExtra("audioCompressor", audio.compressor)
+                putExtra("audioLowCut", audio.lowCut)
+                putExtra("audioSaturation", audio.saturation)
+                putExtra("audioNoise", audio.noise)
+                putExtra("audioMono", audio.mono)
             }
             ContextCompat.startForegroundService(context, intent)
             return true
@@ -198,12 +206,22 @@ class ProcessingService : Service() {
                 overlayEnabled = intent.getBooleanExtra("overlayEnabled", false),
                 overlayStartEpochMs = intent.getLongExtra("overlayStartEpochMs", 0L)
             )
+            val audio = NtscVideoProcessor.AudioSettings(
+                enabled = intent.getBooleanExtra("audioEnabled", false),
+                gainDb = intent.getFloatExtra("audioGainDb", 0f),
+                compressor = intent.getBooleanExtra("audioCompressor", true),
+                lowCut = intent.getBooleanExtra("audioLowCut", false),
+                saturation = intent.getFloatExtra("audioSaturation", 0f),
+                noise = intent.getFloatExtra("audioNoise", 0f),
+                mono = intent.getBooleanExtra("audioMono", false)
+            )
             var lastProgress = -1
             val output = NtscVideoProcessor(applicationContext).process(
                 input,
                 intent.getStringExtra("preset") ?: "",
                 motorZoom,
                 visual,
+                audio,
                 trueInterlaced
             ) { progress ->
                 checkpoint(jobId)
