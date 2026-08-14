@@ -1,5 +1,12 @@
 # MotorZoom
 
+## 0.17.0
+
+- Prévia processada dos primeiros três segundos antes do render completo.
+- Áudio de filmadora opcional: ganho, compressor/limitador, corte de graves,
+  saturação suave, ruído discreto e saída mono/estéreo.
+- Com o módulo de áudio desligado, o MP4 mantém a faixa original sem recompressão.
+
 Aplicativo Android para gravar vídeos e fotos em 4:3 com rocker de zoom contínuo
 de filmadora e processamento NTSC-RS totalmente offline.
 
