@@ -60,6 +60,7 @@ class GalleryActivity : AppCompatActivity() {
         hideSystemUi()
         buildUi()
         loadGallery()
+        openResultFromIntent()
     }
 
     override fun onResume() {
@@ -274,6 +275,24 @@ class GalleryActivity : AppCompatActivity() {
             !item.isVideo -> showImage(item)
             item.isMpeg -> prepareMpegPreview(item)
             else -> showVideo(item.uri, item.name)
+        }
+    }
+
+    private fun openResultFromIntent() {
+        val uriText = intent.getStringExtra("openResultUri") ?: return
+        intent.removeExtra("openResultUri")
+        val uri = Uri.parse(uriText)
+        val mime = intent.getStringExtra("openResultMime") ?: "video/mp4"
+        val name = intent.getStringExtra("openResultName") ?: "Resultado MotorZoom"
+        window.decorView.post {
+            openItem(MediaItem(
+                uri = uri,
+                name = name,
+                mime = mime,
+                dateAddedSeconds = System.currentTimeMillis() / 1000L,
+                sizeBytes = 0L,
+                isVideo = mime.startsWith("video/")
+            ))
         }
     }
 
