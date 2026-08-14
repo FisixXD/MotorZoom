@@ -11,8 +11,8 @@ android {
         applicationId = "app.motorzoom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "0.14.5"
+        versionCode = 33
+        versionName = "0.14.6"
     }
 
     buildFeatures {
