@@ -1,6 +1,6 @@
 use jni::{
     objects::{JByteArray, JClass, JString},
-    sys::{jboolean, jint, JNI_FALSE, JNI_TRUE},
+    sys::{jboolean, jint, jstring, JNI_FALSE, JNI_TRUE},
     JNIEnv,
 };
 use ntsc_rs::{
@@ -12,6 +12,44 @@ use std::sync::{Mutex, OnceLock};
 
 struct Engine {
     effect: NtscEffect,
+}
+
+fn string_to_java(env: &mut JNIEnv, value: String) -> jstring {
+    env.new_string(value)
+        .map(|text| text.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_motorzoom_NativeNtsc_defaultPreset(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let list = SettingsList::<NtscEffectFullSettings>::new();
+    let json = list
+        .to_json_string(&NtscEffectFullSettings::default())
+        .unwrap_or_else(|_| "{\"version\":1}".to_owned());
+    string_to_java(&mut env, json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_motorzoom_NativeNtsc_normalizePreset(
+    mut env: JNIEnv,
+    _class: JClass,
+    preset: JString,
+) -> jstring {
+    let text: String = match env.get_string(&preset) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let list = SettingsList::<NtscEffectFullSettings>::new();
+    let Ok(settings) = list.from_json(&text) else {
+        return std::ptr::null_mut();
+    };
+    match list.to_json_string(&settings) {
+        Ok(json) => string_to_java(&mut env, json),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 static ENGINE: OnceLock<Mutex<Engine>> = OnceLock::new();
