@@ -748,7 +748,10 @@ class NtscVideoProcessor(private val context: Context) {
         frameNumber: Int,
         settings: VisualSettings
     ) {
-        val reducedWidth = (width + 1) / 2
+        // Preserve one detector column per output column. CCD smear is a narrow
+        // transfer-register artifact; half-resolution detection made it look like
+        // broad translucent curtains instead of fine sensor streaks.
+        val reducedWidth = width
         val reducedHeight = (height + 3) / 4
         val reducedSize = reducedWidth * reducedHeight * 3
         if (reducedWidth != smearBufferWidth || reducedHeight != smearBufferHeight) {
@@ -794,11 +797,15 @@ class NtscVideoProcessor(private val context: Context) {
                 // highlights tend toward white after demosaicing and camera colour
                 // processing. A 40% white mix gives that behaviour without losing
                 // the amber/blue identity of the light.
-                val whiteMix = 0.40f
+                val minimumChannel = min(red, min(green, blue))
+                val sourceChroma = ((peak - minimumChannel) / peak.coerceAtLeast(0.001f))
+                    .coerceIn(0f, 1f)
+                val whiteMix = (0.34f + clipped * 0.28f - sourceChroma * 0.10f)
+                    .coerceIn(0.28f, 0.62f)
                 val sourceRed = ((red / peak) * (1f - whiteMix) + whiteMix) * bright
                 val sourceGreen = ((green / peak) * (1f - whiteMix) + whiteMix) * bright
                 val sourceBlue = ((blue / peak) * (1f - whiteMix) + whiteMix) * bright
-                val reducedAt = (reducedY * reducedWidth + x / 2) * 3
+                val reducedAt = (reducedY * reducedWidth + x) * 3
                 if (sourceRed > smearBright[reducedAt]) smearBright[reducedAt] = sourceRed
                 if (sourceGreen > smearBright[reducedAt + 1]) smearBright[reducedAt + 1] = sourceGreen
                 if (sourceBlue > smearBright[reducedAt + 2]) smearBright[reducedAt + 2] = sourceBlue
@@ -809,7 +816,17 @@ class NtscVideoProcessor(private val context: Context) {
         // cross almost the entire frame. This range keeps long trails available
         // while making the default resemble a consumer CCD camcorder.
         val decay = 0.86f + settings.ccdSmearLength.coerceIn(0f, 1f) * 0.13f
+        val railFloor = 0.035f + settings.ccdSmearLength.coerceIn(0f, 1f) * 0.11f
         for (x in 0 until reducedWidth) {
+            var columnRed = 0f
+            var columnGreen = 0f
+            var columnBlue = 0f
+            for (y in 0 until reducedHeight) {
+                val at = (y * reducedWidth + x) * 3
+                columnRed = max(columnRed, smearBright[at])
+                columnGreen = max(columnGreen, smearBright[at + 1])
+                columnBlue = max(columnBlue, smearBright[at + 2])
+            }
             var carriedRed = 0f
             var carriedGreen = 0f
             var carriedBlue = 0f
@@ -818,9 +835,9 @@ class NtscVideoProcessor(private val context: Context) {
                 carriedRed = max(smearBright[at], carriedRed * decay)
                 carriedGreen = max(smearBright[at + 1], carriedGreen * decay)
                 carriedBlue = max(smearBright[at + 2], carriedBlue * decay)
-                smearDown[at] = carriedRed
-                smearDown[at + 1] = carriedGreen
-                smearDown[at + 2] = carriedBlue
+                smearDown[at] = max(carriedRed, columnRed * railFloor)
+                smearDown[at + 1] = max(carriedGreen, columnGreen * railFloor)
+                smearDown[at + 2] = max(carriedBlue, columnBlue * railFloor)
             }
             carriedRed = 0f
             carriedGreen = 0f
@@ -830,9 +847,9 @@ class NtscVideoProcessor(private val context: Context) {
                 carriedRed = max(smearBright[at], carriedRed * decay)
                 carriedGreen = max(smearBright[at + 1], carriedGreen * decay)
                 carriedBlue = max(smearBright[at + 2], carriedBlue * decay)
-                smearUp[at] = carriedRed
-                smearUp[at + 1] = carriedGreen
-                smearUp[at + 2] = carriedBlue
+                smearUp[at] = max(carriedRed, columnRed * railFloor)
+                smearUp[at + 1] = max(carriedGreen, columnGreen * railFloor)
+                smearUp[at + 2] = max(carriedBlue, columnBlue * railFloor)
             }
         }
 
@@ -859,7 +876,7 @@ class NtscVideoProcessor(private val context: Context) {
             val y1 = (y0 + 1).coerceAtMost(reducedHeight - 1)
             val fy = sampleY - y0
             for (x in 0 until width) {
-                val sampleX = x / 2f
+                val sampleX = x.toFloat()
                 val x0 = sampleX.toInt().coerceIn(0, reducedWidth - 1)
                 val x1 = (x0 + 1).coerceAtMost(reducedWidth - 1)
                 val fx = sampleX - x0
@@ -948,28 +965,69 @@ class NtscVideoProcessor(private val context: Context) {
     private fun applyFishEyeRgba(rgba: ByteArray, width: Int, height: Int, strength: Float) {
         val source = rgba.copyOf()
         val amount = strength.coerceIn(0f, 0.8f)
+        val normalizedAmount = amount / 0.8f
+        val lensRadius = 1.14f - normalizedAmount * 0.13f
+        val feather = 0.045f
+        val chromaticShift = 0.004f + normalizedAmount * 0.012f
         for (y in 0 until height) for (x in 0 until width) {
             val normalizedX = ((x + 0.5f) / width) * 2f - 1f
             val normalizedY = ((y + 0.5f) / height) * 2f - 1f
             val radiusSquared = normalizedX * normalizedX + normalizedY * normalizedY
-            val radial = (1f + amount * radiusSquared) / (1f + amount)
-            val sourceX = normalizedX * radial
-            val sourceY = normalizedY * radial
+            val radius = kotlin.math.sqrt(radiusSquared)
+            val lensMask = 1f - smoothStep(lensRadius - feather, lensRadius, radius)
+            val vignette = 1f - 0.24f * smoothStep(lensRadius * 0.68f, lensRadius, radius)
             val destination = (y * width + x) * 4
-            if (sourceX !in -1f..1f || sourceY !in -1f..1f) {
+            if (lensMask <= 0f) {
                 rgba[destination] = 0
                 rgba[destination + 1] = 0
                 rgba[destination + 2] = 0
                 rgba[destination + 3] = 0xff.toByte()
             } else {
-                val sx = (((sourceX + 1f) * 0.5f * (width - 1)).roundToInt())
-                    .coerceIn(0, width - 1)
-                val sy = (((sourceY + 1f) * 0.5f * (height - 1)).roundToInt())
-                    .coerceIn(0, height - 1)
-                val origin = (sy * width + sx) * 4
-                source.copyInto(rgba, destination, origin, origin + 4)
+                // Inverse full-frame fisheye mapping. The centre is expanded and
+                // straight lines bow progressively toward the rounded lens edge.
+                val radial = 1f - amount * 0.62f * (1f - radiusSquared.coerceAtMost(1f))
+                val redRadial = radial * (1f + chromaticShift * radiusSquared)
+                val blueRadial = radial * (1f - chromaticShift * radiusSquared)
+                val red = sampleFishEyeChannel(
+                    source, width, height, normalizedX * redRadial, normalizedY * redRadial, 0
+                )
+                val green = sampleFishEyeChannel(
+                    source, width, height, normalizedX * radial, normalizedY * radial, 1
+                )
+                val blue = sampleFishEyeChannel(
+                    source, width, height, normalizedX * blueRadial, normalizedY * blueRadial, 2
+                )
+                val edgeGain = lensMask * vignette
+                rgba[destination] = (red * edgeGain).roundToInt().coerceIn(0, 255).toByte()
+                rgba[destination + 1] = (green * edgeGain).roundToInt().coerceIn(0, 255).toByte()
+                rgba[destination + 2] = (blue * edgeGain).roundToInt().coerceIn(0, 255).toByte()
+                rgba[destination + 3] = 0xff.toByte()
             }
         }
+    }
+
+    private fun sampleFishEyeChannel(
+        source: ByteArray,
+        width: Int,
+        height: Int,
+        normalizedX: Float,
+        normalizedY: Float,
+        channel: Int
+    ): Float {
+        if (normalizedX !in -1f..1f || normalizedY !in -1f..1f) return 0f
+        val sourceX = (normalizedX + 1f) * 0.5f * (width - 1)
+        val sourceY = (normalizedY + 1f) * 0.5f * (height - 1)
+        val x0 = sourceX.toInt().coerceIn(0, width - 1)
+        val y0 = sourceY.toInt().coerceIn(0, height - 1)
+        val x1 = (x0 + 1).coerceAtMost(width - 1)
+        val y1 = (y0 + 1).coerceAtMost(height - 1)
+        val fx = sourceX - x0
+        val fy = sourceY - y0
+        fun value(px: Int, py: Int): Float =
+            (source[(py * width + px) * 4 + channel].toInt() and 255).toFloat()
+        val top = value(x0, y0) * (1f - fx) + value(x1, y0) * fx
+        val bottom = value(x0, y1) * (1f - fx) + value(x1, y1) * fx
+        return top * (1f - fy) + bottom * fy
     }
 
     private fun applyColorCorrection(rgba: ByteArray, settings: VisualSettings) {
