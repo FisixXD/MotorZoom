@@ -18,8 +18,9 @@ de filmadora e processamento NTSC-RS totalmente offline.
 - Editor de rocker em pós: reproduza um vídeo 60 fps, segure **T/W** quantas
   vezes quiser e use o movimento gravado no render.
 - Correção opcional de temperatura, saturação, contraste, brilho e matiz.
-- Fish-eye de lente opcional com distorção de barril, borda arredondada,
-  vinheta e leve aberração cromática nas extremidades.
+- Fish-eye circular de skate opcional com projeção óptica equidistante,
+  distorção de barril forte, arcos pretos nos cantos, vinheta de lente e leve
+  aberração cromática nas extremidades.
 - CCD Vertical Smear opcional com detecção restrita a luzes saturadas, faixa
   fina de registro vertical e cor automática baseada na própria luz, aplicado
   antes do NTSC-RS.
