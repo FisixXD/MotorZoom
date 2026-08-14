@@ -868,48 +868,114 @@ class MainActivity : AppCompatActivity() {
             overlayPanel.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
+        val audioEnabled = CheckBox(this).apply {
+            text = "Áudio de filmadora (opcional)"
+            isChecked = false
+        }
+        content.addView(audioEnabled)
+        val audioPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(audioPanel)
+        val audioGain = addSlider(audioPanel, "Ganho", -12f, 12f, 1f, 0f) {
+            String.format(Locale.US, "%+.0f dB", it)
+        }
+        val audioCompressor = CheckBox(this).apply {
+            text = "Compressor e limitador (evita estouro)"
+            isChecked = true
+        }
+        audioPanel.addView(audioCompressor)
+        val audioLowCut = CheckBox(this).apply { text = "Corte de graves abaixo de 80 Hz" }
+        audioPanel.addView(audioLowCut)
+        val audioSaturation = addSlider(audioPanel, "Saturação suave", 0f, 1f, 0.05f, 0f) {
+            String.format(Locale.US, "%.0f%%", it * 100f)
+        }
+        val audioNoise = addSlider(audioPanel, "Ruído discreto da câmera", 0f, 0.03f, 0.002f, 0f) {
+            String.format(Locale.US, "%.1f%%", it * 100f)
+        }
+        val audioMono = CheckBox(this).apply { text = "Converter para mono" }
+        audioPanel.addView(audioMono)
+        audioPanel.addView(TextView(this).apply {
+            text = "Desligado: o áudio original do MP4 é mantido sem recompressão."
+        })
+        audioEnabled.setOnCheckedChangeListener { _, checked ->
+            audioPanel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
+        fun motorZoomSettings() = NtscVideoProcessor.MotorZoomSettings(
+            enabled = rockerAutomation.isNotEmpty(),
+            keyframes = rockerAutomation
+        )
+
+        fun overlayEpoch(): Long {
+            val parser = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).apply {
+                isLenient = false
+            }
+            return runCatching { parser.parse(overlayDate.text.toString())!!.time }
+                .getOrElse { System.currentTimeMillis() }
+        }
+
+        fun visualSettings() = NtscVideoProcessor.VisualSettings(
+            colorEnabled = colorEnabled.isChecked,
+            temperature = temperature.value / 100f,
+            saturation = saturation.value,
+            contrast = contrast.value,
+            brightness = brightness.value,
+            tint = tint.value / 100f,
+            fishEyeEnabled = fishEyeEnabled.isChecked,
+            fishEyeStrength = fishEyeStrength.value,
+            ccdSmearEnabled = ccdSmearEnabled.isChecked,
+            ccdSmearThreshold = ccdThreshold.value,
+            ccdSmearKnee = ccdKnee.value,
+            ccdSmearLength = ccdLength.value,
+            ccdSmearIntensity = ccdIntensity.value,
+            ccdSmearTint = ccdTint.selectedItemPosition,
+            ccdSmearFlicker = ccdFlicker.value,
+            overlayEnabled = overlayEnabled.isChecked,
+            overlayStartEpochMs = overlayEpoch()
+        )
+
+        fun audioSettings() = NtscVideoProcessor.AudioSettings(
+            enabled = audioEnabled.isChecked,
+            gainDb = audioGain.value,
+            compressor = audioCompressor.isChecked,
+            lowCut = audioLowCut.isChecked,
+            saturation = audioSaturation.value,
+            noise = audioNoise.value,
+            mono = audioMono.isChecked
+        )
+
+        content.addView(Button(this).apply {
+            text = "GERAR PRÉVIA DE 3 SEGUNDOS"
+            setOnClickListener {
+                startPreviewProcessing(
+                    uri,
+                    motorZoomSettings(),
+                    visualSettings(),
+                    audioSettings()
+                )
+            }
+        })
+
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Processar vídeo")
             .setView(scroll)
             .setPositiveButton("Processar") { _, _ ->
-                val settings = NtscVideoProcessor.MotorZoomSettings(
-                    enabled = rockerAutomation.isNotEmpty(),
-                    keyframes = rockerAutomation
+                startNtscProcessing(
+                    uri,
+                    motorZoomSettings(),
+                    visualSettings(),
+                    audioSettings(),
+                    interlacedOutput.isChecked
                 )
-                val dateParser = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).apply {
-                    isLenient = false
-                }
-                val overlayEpoch = runCatching { dateParser.parse(overlayDate.text.toString())!!.time }
-                    .getOrElse {
-                        Toast.makeText(this, "Data inválida; usando a data atual", Toast.LENGTH_LONG).show()
-                        System.currentTimeMillis()
-                    }
-                val visual = NtscVideoProcessor.VisualSettings(
-                    colorEnabled = colorEnabled.isChecked,
-                    temperature = temperature.value / 100f,
-                    saturation = saturation.value,
-                    contrast = contrast.value,
-                    brightness = brightness.value,
-                    tint = tint.value / 100f,
-                    fishEyeEnabled = fishEyeEnabled.isChecked,
-                    fishEyeStrength = fishEyeStrength.value,
-                    ccdSmearEnabled = ccdSmearEnabled.isChecked,
-                    ccdSmearThreshold = ccdThreshold.value,
-                    ccdSmearKnee = ccdKnee.value,
-                    ccdSmearLength = ccdLength.value,
-                    ccdSmearIntensity = ccdIntensity.value,
-                    ccdSmearTint = ccdTint.selectedItemPosition,
-                    ccdSmearFlicker = ccdFlicker.value,
-                    overlayEnabled = overlayEnabled.isChecked,
-                    overlayStartEpochMs = overlayEpoch
-                )
-                startNtscProcessing(uri, settings, visual, interlacedOutput.isChecked)
             }
             .setNeutralButton("Somente NTSC") { _, _ ->
                 startNtscProcessing(
                     uri,
                     NtscVideoProcessor.MotorZoomSettings(),
                     NtscVideoProcessor.VisualSettings(),
+                    NtscVideoProcessor.AudioSettings(),
                     interlacedOutput.isChecked
                 )
             }
@@ -1270,10 +1336,79 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun startPreviewProcessing(
+        uri: Uri,
+        motorZoom: NtscVideoProcessor.MotorZoomSettings,
+        visual: NtscVideoProcessor.VisualSettings,
+        audio: NtscVideoProcessor.AudioSettings
+    ) {
+        val progressDialog = android.app.ProgressDialog(this).apply {
+            setTitle("Prévia NTSC-RS")
+            setMessage("Processando três segundos…")
+            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
+            max = 100
+            setCancelable(false)
+            show()
+        }
+        cameraExecutor.execute {
+            runCatching {
+                NtscVideoProcessor(applicationContext).processPreview(
+                    uri, presetJson, motorZoom, visual, audio
+                ) { progress ->
+                    runOnUiThread { progressDialog.progress = progress }
+                }
+            }.onSuccess { preview ->
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    showProcessedPreview(preview)
+                }
+            }.onFailure { error ->
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("Erro ao gerar prévia")
+                        .setMessage(error.message ?: error.javaClass.simpleName)
+                        .setPositiveButton("Fechar", null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun showProcessedPreview(file: java.io.File) {
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val video = android.widget.VideoView(this)
+        val controls = android.widget.MediaController(this).apply { setAnchorView(video) }
+        video.setMediaController(controls)
+        video.setVideoURI(Uri.fromFile(file))
+        video.setOnPreparedListener { player ->
+            player.isLooping = true
+            video.start()
+        }
+        root.addView(video, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            Gravity.CENTER
+        ))
+        root.addView(Button(this).apply {
+            text = "FECHAR PRÉVIA"
+            setOnClickListener { dialog.dismiss() }
+        }, FrameLayout.LayoutParams(
+            (170 * resources.displayMetrics.density).toInt(),
+            (52 * resources.displayMetrics.density).toInt(),
+            Gravity.TOP or Gravity.END
+        ).apply { setMargins(12, 12, 12, 12) })
+        dialog.setOnDismissListener { video.stopPlayback() }
+        dialog.setContentView(root)
+        dialog.show()
+    }
+
     private fun startNtscProcessing(
         uri: Uri,
         motorZoom: NtscVideoProcessor.MotorZoomSettings,
         visual: NtscVideoProcessor.VisualSettings,
+        audio: NtscVideoProcessor.AudioSettings,
         trueInterlaced: Boolean
     ) {
         try {
@@ -1283,6 +1418,7 @@ class MainActivity : AppCompatActivity() {
                 presetJson,
                 motorZoom,
                 visual,
+                audio,
                 trueInterlaced
             )
             if (started) {
