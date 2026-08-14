@@ -30,6 +30,11 @@
             android:exported="false"
             android:screenOrientation="landscape" />
         <activity
+            android:name=".ProcessingQueueActivity"
+            android:configChanges="orientation|screenSize"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize"
             android:exported="true"
