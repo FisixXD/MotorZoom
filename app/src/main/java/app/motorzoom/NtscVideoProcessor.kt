@@ -968,14 +968,17 @@ class NtscVideoProcessor(private val context: Context) {
         val source = rgba.copyOf()
         val amount = strength.coerceIn(0f, 0.8f)
         val normalizedAmount = amount / 0.8f
-        // A circular full-frame skate lens touches the middle of all four edges.
-        // The old radius above 1.0 left long flat edges and looked like a curved
-        // television screen rather than a real fisheye attachment.
-        val lensRadius = 1.005f
-        val feather = 0.014f
-        val projectionAngle = 0.90f + normalizedAmount * 0.38f
-        val projectionScale = kotlin.math.tan(projectionAngle.toDouble()).toFloat()
-        val chromaticShift = 0.0035f + normalizedAmount * 0.010f
+        // A skate-video adapter is normally a full-frame fisheye: the image still
+        // occupies almost the whole 4:3 sensor and only the corners reveal the
+        // circular hood.  A radius near 1.0 creates a floating orb instead.
+        val lensRadius = 1.30f
+        val feather = 0.035f
+        // Mild Brown-Conrady barrel mapping.  Keeping the coefficients small is
+        // important: real Century/Opteka adapters bend straight lines mainly near
+        // the edge; they do not squeeze the entire scene into a sphere.
+        val barrelK1 = 0.055f + normalizedAmount * 0.105f
+        val barrelK2 = 0.010f + normalizedAmount * 0.025f
+        val chromaticShift = 0.0015f + normalizedAmount * 0.0030f
         for (y in 0 until height) for (x in 0 until width) {
             val normalizedX = ((x + 0.5f) / width) * 2f - 1f
             val normalizedY = ((y + 0.5f) / height) * 2f - 1f
@@ -991,16 +994,10 @@ class NtscVideoProcessor(private val context: Context) {
                 rgba[destination + 2] = 0
                 rgba[destination + 3] = 0xff.toByte()
             } else {
-                // Rectilinear-to-equidistant projection. Unlike the old polynomial
-                // warp, this creates the aggressive optical barrel curvature seen
-                // in classic Century/Opteka skate-video fisheye adapters.
-                val sourceRadius = if (radius < 0.0001f) 0f else {
-                    kotlin.math.tan(
-                        (lensRadiusNormalized * projectionAngle).toDouble()
-                    ).toFloat() / projectionScale
-                }
-                val radial = if (radius < 0.0001f) 1f else sourceRadius / radius
-                val edgePower = lensRadiusNormalized * lensRadiusNormalized * lensRadiusNormalized
+                val r2 = radiusSquared.coerceAtMost(lensRadius * lensRadius)
+                val radial = (1f - barrelK1 * r2 + barrelK2 * r2 * r2)
+                    .coerceIn(0.72f, 1f)
+                val edgePower = lensRadiusNormalized * lensRadiusNormalized
                 val redRadial = radial * (1f + chromaticShift * edgePower)
                 val blueRadial = radial * (1f - chromaticShift * edgePower)
                 val red = sampleFishEyeChannel(
